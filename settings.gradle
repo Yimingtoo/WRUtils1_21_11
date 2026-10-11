@@ -1,0 +1,8 @@
+pluginManagement {
+    repositories {
+//        maven { url = 'https://bmclapi2.bangbang93.com/maven/' }   // 镜像
+        maven { name = 'Fabric'; url = 'https://maven.fabricmc.net/' }
+        maven { url = 'https://maven.aliyun.com/repository/public' } // Maven Central 镜像
+        gradlePluginPortal()
+    }
+}

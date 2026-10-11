@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "id": "wrutils1_21_11",
+  "version": "1.0-SNAPSHOT",
+  "name": "WRUtils1_21_11",
+  "description": "",
+  "authors": [],
+  "contact": {},
+  "license": "All-Rights-Reserved",
+  "icon": "assets/wrutils1_21_11/icon.png",
+  "environment": "*",
+  "entrypoints": {
+    "fabric-datagen": [
+      "com.yiming.wrutils1_21_11.client.Wrutils1_21_11DataGenerator"
+    ],
+    "client": [
+      "com.yiming.wrutils1_21_11.client.Wrutils1_21_11Client"
+    ],
+    "main": [
+      "com.yiming.wrutils1_21_11.Wrutils1_21_11"
+    ]
+  },
+  "mixins": [
+    "wrutils1_21_11.mixins.json",
+    {
+      "config": "wrutils1_21_11.client.mixins.json",
+      "environment": "client"
+    }
+  ],
+  "depends": {
+    "fabricloader": ">=0.19.3",
+    "fabric-api": "*",
+    "minecraft": "1.21.11"
+  }
+}
