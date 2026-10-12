@@ -1,4 +1,8 @@
 .gradle/
 .idea/
 run/
+docs/
+logs/
 build/
+CLAUDE.md
+
