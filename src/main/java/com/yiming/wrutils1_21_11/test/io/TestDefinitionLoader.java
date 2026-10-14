@@ -5,10 +5,14 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
+import com.yiming.wrutils1_21_11.test.model.AreaSpec;
 import com.yiming.wrutils1_21_11.test.model.AssertStep;
+import com.yiming.wrutils1_21_11.test.model.CleanupMode;
 import com.yiming.wrutils1_21_11.test.model.Expectation;
-import com.yiming.wrutils1_21_11.test.model.IsolationSpec;
+import com.yiming.wrutils1_21_11.test.model.NbtMatch;
 import com.yiming.wrutils1_21_11.test.model.PlaceStep;
+import com.yiming.wrutils1_21_11.test.model.RedstoneExpect;
+import com.yiming.wrutils1_21_11.test.model.Region;
 import com.yiming.wrutils1_21_11.test.model.SetupBlock;
 import com.yiming.wrutils1_21_11.test.model.Step;
 import com.yiming.wrutils1_21_11.test.model.TestDefinition;
@@ -28,7 +32,12 @@ import java.util.Map;
 
 public final class TestDefinitionLoader {
     private static final long DEFAULT_TIMEOUT_TICKS = 200L;
-    private static final int DEFAULT_ISOLATE_RADIUS = 3;
+    /**
+     * 方块实体 NBT 的顶层元数据，匹配时默认跳过（只作用于顶层）：
+     * x/y/z 是坐标、id 是方块实体类型、components 是空/组件容器（1.21 起方块实体也带 components）。
+     * 需要断言 components 时用 {@code nbtIgnore} 显式覆盖。
+     */
+    private static final List<String> DEFAULT_NBT_IGNORE_KEYS = List.of("x", "y", "z", "id", "components");
 
     private TestDefinitionLoader() {
     }
@@ -41,7 +50,10 @@ public final class TestDefinitionLoader {
         String dimension = optString(root, "dimension", "minecraft:overworld");
         BlockPos origin = readPos(root.get("origin"));
         long timeoutTicks = root.has("timeoutTicks") ? root.get("timeoutTicks").getAsLong() : DEFAULT_TIMEOUT_TICKS;
-        IsolationSpec isolate = readIsolate(root.getAsJsonObject("isolate"));
+        if (root.has("isolate")) {
+            throw new IllegalArgumentException("字段 isolate 已改名为 area，请重命名");
+        }
+        AreaSpec area = readArea(root.getAsJsonObject("area"));
 
         List<SetupBlock> setup = new ArrayList<>();
         if (root.has("setup")) {
@@ -54,27 +66,43 @@ public final class TestDefinitionLoader {
         for (JsonElement element : root.getAsJsonArray("steps")) {
             steps.add(readStep(element.getAsJsonObject()));
         }
-        return new TestDefinition(id, description, dimension, origin, timeoutTicks, isolate,
-                List.copyOf(setup), List.copyOf(steps));
+        return new TestDefinition(id, description, dimension, origin, timeoutTicks, area,
+                List.copyOf(setup), List.copyOf(steps), !root.has("record") || root.get("record").getAsBoolean());
     }
 
-    private static IsolationSpec readIsolate(JsonObject isolate) {
-        if (isolate == null) {
+    private static AreaSpec readArea(JsonObject area) {
+        if (area == null) {
             return null;
         }
+        // Phase 2 的 radius/clearArea 是全区域清空的破坏性语义，已废弃
+        if (area.has("radius") || area.has("clearArea")) {
+            throw new IllegalArgumentException(
+                    "area.radius/clearArea 已废弃：改用 area.input{min,max}（可写区）+ area.cleanup");
+        }
+        Region input = area.has("input") ? readRegion(area.getAsJsonObject("input")) : null;
+        CleanupMode cleanup = switch (optString(area, "cleanup", "clear_input").toLowerCase(Locale.ROOT)) {
+            case "clear_input", "clear" -> CleanupMode.CLEAR_INPUT;
+            case "none", "keep" -> CleanupMode.NONE;
+            case "snapshot", "restore" -> CleanupMode.SNAPSHOT;
+            default -> throw new IllegalArgumentException("unknown cleanup mode: " + area.get("cleanup").getAsString());
+        };
         Map<String, Object> gameRules = new LinkedHashMap<>();
-        if (isolate.has("gameRules")) {
-            for (Map.Entry<String, JsonElement> entry : isolate.getAsJsonObject("gameRules").entrySet()) {
+        if (area.has("gameRules")) {
+            for (Map.Entry<String, JsonElement> entry : area.getAsJsonObject("gameRules").entrySet()) {
                 JsonPrimitive value = entry.getValue().getAsJsonPrimitive();
                 gameRules.put(entry.getKey(), value.isBoolean() ? value.getAsBoolean() : value.getAsInt());
             }
         }
-        return new IsolationSpec(
-                isolate.has("radius") ? isolate.get("radius").getAsInt() : DEFAULT_ISOLATE_RADIUS,
-                !isolate.has("clearArea") || isolate.get("clearArea").getAsBoolean(),
-                !isolate.has("clearEntities") || isolate.get("clearEntities").getAsBoolean(),
-                !isolate.has("forceChunks") || isolate.get("forceChunks").getAsBoolean(),
+        return new AreaSpec(
+                input,
+                cleanup,
+                area.has("forceChunks") && area.get("forceChunks").getAsBoolean(),
+                area.has("clearEntities") && area.get("clearEntities").getAsBoolean(),
                 Map.copyOf(gameRules));
+    }
+
+    private static Region readRegion(JsonObject region) {
+        return Region.of(readPos(region.get("min")), readPos(region.get("max")));
     }
 
     private static Step readStep(JsonObject step) {
@@ -90,8 +118,43 @@ public final class TestDefinitionLoader {
     }
 
     private static Expectation readExpectation(JsonObject expect) {
-        String block = expect != null && expect.has("block") ? expect.get("block").getAsString() : null;
-        return new Expectation(block);
+        if (expect == null) {
+            return new Expectation(null, false, null, null);
+        }
+        String block = optString(expect, "block", null);
+        boolean strict = expect.has("strict") && expect.get("strict").getAsBoolean();
+        return new Expectation(block, strict, readNbtMatch(expect), readRedstone(expect));
+    }
+
+    private static NbtMatch readNbtMatch(JsonObject expect) {
+        if (!expect.has("nbt")) {
+            return null;
+        }
+        boolean exact = "exact".equalsIgnoreCase(optString(expect, "nbtMatch", "subset"));
+        List<String> ignoreKeys = new ArrayList<>(DEFAULT_NBT_IGNORE_KEYS);
+        if (expect.has("nbtIgnore")) {
+            ignoreKeys.clear();
+            for (JsonElement element : expect.getAsJsonArray("nbtIgnore")) {
+                ignoreKeys.add(element.getAsString());
+            }
+        }
+        return new NbtMatch(expect.get("nbt").getAsString(), exact, List.copyOf(ignoreKeys));
+    }
+
+    private static RedstoneExpect readRedstone(JsonObject expect) {
+        if (!expect.has("redstone")) {
+            return null;
+        }
+        JsonObject redstone = expect.getAsJsonObject("redstone");
+        RedstoneExpect.Mode mode = switch (optString(redstone, "mode", "received").toLowerCase(Locale.ROOT)) {
+            case "received" -> RedstoneExpect.Mode.RECEIVED;
+            case "strong", "received_strong" -> RedstoneExpect.Mode.STRONG;
+            case "emitted", "emit" -> RedstoneExpect.Mode.EMITTED;
+            default -> throw new IllegalArgumentException("unknown redstone mode: " + redstone.get("mode").getAsString());
+        };
+        return new RedstoneExpect(mode, readDirection(redstone, "side", Direction.UP),
+                redstone.has("min") ? redstone.get("min").getAsInt() : 0,
+                redstone.has("max") ? redstone.get("max").getAsInt() : 15);
     }
 
     private static Direction readDirection(JsonObject obj, String key, Direction fallback) {

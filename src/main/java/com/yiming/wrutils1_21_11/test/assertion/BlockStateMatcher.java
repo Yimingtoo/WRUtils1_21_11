@@ -11,14 +11,21 @@ public final class BlockStateMatcher {
     private BlockStateMatcher() {
     }
 
-    public static Optional<String> mismatch(BlockArgumentParser.BlockResult expected, BlockState actual) {
+    /**
+     * {@code strict=false} 只比作者写了的属性（{@code parsed.properties()}）；
+     * {@code strict=true} 比对期望的完整属性集（{@code parsed.blockState().getEntries()}）。
+     */
+    public static Optional<String> mismatch(BlockArgumentParser.BlockResult expected, BlockState actual, boolean strict) {
         BlockState expectedState = expected.blockState();
         if (!actual.isOf(expectedState.getBlock())) {
             return Optional.of("block: expected " + BlockArgumentParser.stringifyBlockState(expectedState)
                     + ", got " + BlockArgumentParser.stringifyBlockState(actual));
         }
         Map<Property<?>, Comparable<?>> actualProperties = actual.getEntries();
-        for (Map.Entry<Property<?>, Comparable<?>> entry : expected.properties().entrySet()) {
+        Map<Property<?>, Comparable<?>> expectedProperties = strict
+                ? expectedState.getEntries()
+                : expected.properties();
+        for (Map.Entry<Property<?>, Comparable<?>> entry : expectedProperties.entrySet()) {
             Property<?> property = entry.getKey();
             Comparable<?> expectedValue = entry.getValue();
             Comparable<?> actualValue = actualProperties.get(property);

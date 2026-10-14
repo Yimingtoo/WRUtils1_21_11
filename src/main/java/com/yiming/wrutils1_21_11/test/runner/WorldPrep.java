@@ -1,7 +1,9 @@
 package com.yiming.wrutils1_21_11.test.runner;
 
 import com.yiming.wrutils1_21_11.WrtLog;
-import com.yiming.wrutils1_21_11.test.model.IsolationSpec;
+import com.yiming.wrutils1_21_11.test.model.AreaSpec;
+import com.yiming.wrutils1_21_11.test.model.CleanupMode;
+import com.yiming.wrutils1_21_11.test.model.Region;
 import net.minecraft.block.Block;
 import net.minecraft.block.Blocks;
 import net.minecraft.entity.Entity;
@@ -21,24 +23,28 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * 测试开始前的一次性准备与结束时的还原。
+ *
+ * <p>**非破坏性**：方块层面只动 {@code spec.input}（可写区），机器本体与断言位置一律不碰。
+ * 强制区块/清实体按"测试涉及范围"（{@code chunkRegion} = 可写区 ∪ 所有步骤坐标）计算。
+ */
 public final class WorldPrep {
     private final ServerWorld world;
-    private final BlockPos origin;
-    private final IsolationSpec spec;
+    private final AreaSpec spec;
+    private final Region chunkRegion;
     private final List<ChunkPos> forcedChunks = new ArrayList<>();
     private final Map<GameRule<?>, Object> savedRules = new LinkedHashMap<>();
 
-    public WorldPrep(ServerWorld world, BlockPos origin, IsolationSpec spec) {
+    public WorldPrep(ServerWorld world, AreaSpec spec, Region chunkRegion) {
         this.world = world;
-        this.origin = origin;
         this.spec = spec;
+        this.chunkRegion = chunkRegion;
     }
 
     public void prepare() {
         try {
-            if (spec.clearArea()) {
-                clearArea();
-            }
+            applyCleanup();
             if (spec.forceChunks()) {
                 forceChunks();
             }
@@ -54,9 +60,8 @@ public final class WorldPrep {
     }
 
     /**
-     * 只还原本次 prepare 改动的全局量（gamerule、强制区块）。
-     * 被清掉的方块不还原——那是测试前的既定环境，事后无从得知原状。
-     * 幂等：重复调用无副作用。
+     * 只还原本次 prepare 改动的全局量（gamerule、强制区块），并保持幂等。
+     * 可写区里的方块**不还原**（当前仅实现 CLEAR_INPUT 模式）。
      */
     public void restore() {
         MinecraftServer server = world.getServer();
@@ -65,23 +70,25 @@ public final class WorldPrep {
         }
         savedRules.clear();
         for (ChunkPos chunk : forcedChunks) {
-            world.setChunkForced(chunk.getStartX() >> 4, chunk.getStartZ() >> 4, false);
+            world.setChunkForced(chunk.x, chunk.z, false);
         }
         forcedChunks.clear();
     }
 
-    private Box areaBox() {
-        int r = spec.radius();
-        return new Box(
-                origin.getX() - r, origin.getY() - r, origin.getZ() - r,
-                origin.getX() + r + 1, origin.getY() + r + 1, origin.getZ() + r + 1);
+    private void applyCleanup() {
+        switch (spec.cleanup()) {
+            case CLEAR_INPUT -> clearInput();
+            case NONE, SNAPSHOT -> throw new UnsupportedOperationException(
+                    "cleanup 模式 " + spec.cleanup() + " 尚未实现（目前仅支持 clear_input）");
+        }
     }
 
-    private void clearArea() {
-        int r = spec.radius();
-        BlockPos min = origin.add(-r, -r, -r);
-        BlockPos max = origin.add(r, r, r);
-        for (BlockPos pos : BlockPos.iterate(min, max)) {
+    private void clearInput() {
+        Region input = spec.input();
+        if (input == null) {
+            return;
+        }
+        for (BlockPos pos : BlockPos.iterate(input.min(), input.max())) {
             if (!world.getBlockState(pos).isAir()) {
                 // NOTIFY_ALL 而非 FORCE_STATE：保留完整的红石/邻居更新语义
                 world.setBlockState(pos, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
@@ -90,11 +97,10 @@ public final class WorldPrep {
     }
 
     private void forceChunks() {
-        int r = spec.radius();
-        int minCx = (origin.getX() - r) >> 4;
-        int maxCx = (origin.getX() + r) >> 4;
-        int minCz = (origin.getZ() - r) >> 4;
-        int maxCz = (origin.getZ() + r) >> 4;
+        int minCx = chunkRegion.min().getX() >> 4;
+        int maxCx = chunkRegion.max().getX() >> 4;
+        int minCz = chunkRegion.min().getZ() >> 4;
+        int maxCz = chunkRegion.max().getZ() >> 4;
         for (int cx = minCx; cx <= maxCx; cx++) {
             for (int cz = minCz; cz <= maxCz; cz++) {
                 if (world.setChunkForced(cx, cz, true)) {
@@ -105,7 +111,9 @@ public final class WorldPrep {
     }
 
     private void clearEntities() {
-        Box box = areaBox();
+        Box box = new Box(
+                chunkRegion.min().getX(), chunkRegion.min().getY(), chunkRegion.min().getZ(),
+                chunkRegion.max().getX() + 1, chunkRegion.max().getY() + 1, chunkRegion.max().getZ() + 1);
         discardEntitiesOfType(ItemEntity.class, box);
         discardEntitiesOfType(ExperienceOrbEntity.class, box);
     }
