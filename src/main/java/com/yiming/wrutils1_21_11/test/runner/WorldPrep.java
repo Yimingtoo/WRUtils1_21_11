@@ -26,7 +26,7 @@ import java.util.Map;
 /**
  * 测试开始前的一次性准备与结束时的还原。
  *
- * <p>**非破坏性**：方块层面只动 {@code spec.input}（可写区），机器本体与断言位置一律不碰。
+ * <p>**非破坏性**：方块层面只动 {@code spec.inputs}（可写区），机器本体与断言位置一律不碰。
  * 强制区块/清实体按"测试涉及范围"（{@code chunkRegion} = 可写区 ∪ 所有步骤坐标）计算。
  */
 public final class WorldPrep {
@@ -84,14 +84,12 @@ public final class WorldPrep {
     }
 
     private void clearInput() {
-        Region input = spec.input();
-        if (input == null) {
-            return;
-        }
-        for (BlockPos pos : BlockPos.iterate(input.min(), input.max())) {
-            if (!world.getBlockState(pos).isAir()) {
-                // NOTIFY_ALL 而非 FORCE_STATE：保留完整的红石/邻居更新语义
-                world.setBlockState(pos, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+        for (Region input : spec.inputs()) {
+            for (BlockPos pos : BlockPos.iterate(input.min(), input.max())) {
+                if (!world.getBlockState(pos).isAir()) {
+                    // NOTIFY_ALL 而非 FORCE_STATE：保留完整的红石/邻居更新语义
+                    world.setBlockState(pos, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+                }
             }
         }
     }

@@ -1,8 +1,5 @@
 package com.yiming.wrutils1_21_11.command;
 
-import com.google.gson.GsonBuilder;
-import com.google.gson.JsonArray;
-import com.google.gson.JsonObject;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
@@ -10,8 +7,11 @@ import com.yiming.wrutils1_21_11.replay.RecordingBackend;
 import com.yiming.wrutils1_21_11.replay.RecordingConfig;
 import com.yiming.wrutils1_21_11.test.WrtTestEngine;
 import com.yiming.wrutils1_21_11.test.io.TestDefinitionLoader;
+import com.yiming.wrutils1_21_11.test.io.TestDefinitionWriter;
 import com.yiming.wrutils1_21_11.test.io.TestPaths;
+import com.yiming.wrutils1_21_11.test.model.AreaSpec;
 import com.yiming.wrutils1_21_11.test.model.AssertStep;
+import com.yiming.wrutils1_21_11.test.model.CleanupMode;
 import com.yiming.wrutils1_21_11.test.model.PlaceStep;
 import com.yiming.wrutils1_21_11.test.model.Region;
 import com.yiming.wrutils1_21_11.test.model.Step;
@@ -30,6 +30,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Stream;
 
 public final class WrtTestCommand {
@@ -67,7 +68,13 @@ public final class WrtTestCommand {
                                 .then(CommandManager.argument("filter", StringArgumentType.word())
                                         .executes(context -> runAll(context,
                                                 StringArgumentType.getString(context, "filter")))))
-                        .then(CommandManager.literal("reload").executes(WrtTestCommand::reload)))
+                        .then(CommandManager.literal("stop").executes(WrtTestCommand::stop))
+                        .then(CommandManager.literal("reload").executes(WrtTestCommand::reload))
+                        .then(CommandManager.literal("roundtrip")
+                                .executes(context -> roundtrip(context, null))
+                                .then(CommandManager.argument("id", StringArgumentType.word())
+                                        .executes(context -> roundtrip(context,
+                                                StringArgumentType.getString(context, "id"))))))
                 .then(CommandManager.literal("recording")
                         .then(CommandManager.literal("status").executes(WrtTestCommand::recordingStatus))
                         .then(CommandManager.literal("test").executes(WrtTestCommand::recordingTest)))
@@ -146,9 +153,11 @@ public final class WrtTestCommand {
         Region input = Region.of(selection.pos1(), selection.pos2());
         BlockPos origin = input.min();
         String dimension = ((ServerWorld) player.getEntityWorld()).getRegistryKey().getValue().toString();
+        TestDefinition definition = new TestDefinition(id, description == null ? "" : description, dimension, origin,
+                DEFAULT_TIMEOUT_TICKS, new AreaSpec(List.of(input), CleanupMode.CLEAR_INPUT, false, false, Map.of()),
+                List.of(), List.of(), true);
         try {
-            Files.createDirectories(file.getParent());
-            Files.writeString(file, skeleton(id, description == null ? "" : description, dimension, origin, input));
+            TestDefinitionWriter.write(file, definition);
         } catch (IOException e) {
             source.sendError(Text.literal("[WRT] 写入失败: " + e));
             return 0;
@@ -231,6 +240,17 @@ public final class WrtTestCommand {
         return definitions.size();
     }
 
+    /** 中止当前 run（含 runall 队列与录制探测）。被中止的 run 仍会正常落盘一条 ABORTED 报告。 */
+    private static int stop(CommandContext<ServerCommandSource> context) {
+        ServerCommandSource source = context.getSource();
+        if (!WrtTestEngine.get().stop()) {
+            source.sendError(Text.literal("[WRT] 没有正在运行的测试"));
+            return 0;
+        }
+        source.sendFeedback(() -> Text.literal("[WRT] 已停止当前测试"), false);
+        return 1;
+    }
+
     private static String idOf(Path file) {
         String name = file.getFileName().toString();
         return name.substring(0, name.length() - ".json".length());
@@ -296,37 +316,56 @@ public final class WrtTestCommand {
         return TestDefinitionLoader.load(file);
     }
 
-    private static String skeleton(String id, String description, String dimension, BlockPos origin, Region input) {
-        JsonObject root = new JsonObject();
-        root.addProperty("id", id);
-        root.addProperty("description", description);
-        root.addProperty("dimension", dimension);
-        root.add("origin", posArray(origin));
-        root.addProperty("timeoutTicks", DEFAULT_TIMEOUT_TICKS);
-
-        JsonObject region = new JsonObject();
-        region.add("min", posArray(input.min()));
-        region.add("max", posArray(input.max()));
-
-        JsonObject area = new JsonObject();
-        area.add("input", region);
-        area.addProperty("cleanup", "clear_input");
-        area.addProperty("forceChunks", false);
-        area.addProperty("clearEntities", false);
-        area.add("gameRules", new JsonObject());
-        root.add("area", area);
-
-        root.add("setup", new JsonArray());
-        root.add("steps", new JsonArray());
-        return new GsonBuilder().setPrettyPrinting().create().toJson(root) + "\n";
-    }
-
-    private static JsonArray posArray(BlockPos pos) {
-        JsonArray array = new JsonArray();
-        array.add(pos.getX());
-        array.add(pos.getY());
-        array.add(pos.getZ());
-        return array;
+    /** 往返保真自检：load 出来的对象与「写回去再 load」的对象必须相等。 */
+    private static int roundtrip(CommandContext<ServerCommandSource> context, String id) {
+        ServerCommandSource source = context.getSource();
+        List<Path> files = new ArrayList<>();
+        if (id != null) {
+            files.add(TestPaths.testFile(source.getServer(), id));
+        } else {
+            Path dir = TestPaths.testsDir(source.getServer());
+            if (!Files.isDirectory(dir)) {
+                source.sendError(Text.literal("[WRT] 没有测试目录: " + dir));
+                return 0;
+            }
+            try (Stream<Path> stream = Files.list(dir)) {
+                stream.filter(path -> path.getFileName().toString().endsWith(".json"))
+                        .sorted()
+                        .forEach(files::add);
+            } catch (IOException e) {
+                source.sendError(Text.literal("[WRT] 读取目录失败: " + e));
+                return 0;
+            }
+        }
+        int ok = 0;
+        int bad = 0;
+        for (Path file : files) {
+            try {
+                TestDefinition original = TestDefinitionLoader.load(file);
+                TestDefinition reloaded = TestDefinitionLoader.parse(
+                        TestDefinitionWriter.toJson(original), file.getFileName().toString());
+                if (original.equals(reloaded)) {
+                    ok++;
+                } else {
+                    bad++;
+                    Path failed = file;
+                    source.sendError(Text.literal("[WRT] 往返不等: " + failed.getFileName()
+                            + "\n  A=" + original + "\n  B=" + reloaded));
+                }
+            } catch (Exception e) {
+                bad++;
+                Path failed = file;
+                source.sendError(Text.literal("[WRT] 往返失败: " + failed.getFileName() + ": " + e.getMessage()));
+            }
+        }
+        if (ok == 0 && bad == 0) {
+            source.sendFeedback(() -> Text.literal("[WRT] 没有可校验的测试"), false);
+            return 0;
+        }
+        int okCount = ok;
+        int badCount = bad;
+        source.sendFeedback(() -> Text.literal("[WRT] roundtrip: " + okCount + " 相等 / " + badCount + " 不等"), false);
+        return bad == 0 ? 1 : 0;
     }
 
     private static String describe(Step step) {

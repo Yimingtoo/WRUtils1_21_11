@@ -1,0 +1,79 @@
+package com.yiming.wrutils1_21_11.client.editor;
+
+import com.mojang.brigadier.exceptions.CommandSyntaxException;
+import net.minecraft.block.Block;
+import net.minecraft.client.MinecraftClient;
+import net.minecraft.command.argument.BlockArgumentParser;
+import net.minecraft.registry.RegistryKeys;
+import net.minecraft.registry.RegistryWrapper;
+
+/** 用与 {@code /setblock} 完全相同的解析器校验方块串，供 GUI 实时标红与保存前拦截。 */
+public final class BlockStringValidator {
+    private BlockStringValidator() {
+    }
+
+    /**
+     * @return {@code null} 表示合法；否则是可直接显示的错误信息。
+     *         世界尚未加载（拿不到注册表）时一律放行，交给服务端兜底。
+     */
+    public static String validate(String text) {
+        RegistryWrapper<Block> blocks = blocks();
+        if (blocks == null) {
+            return null;
+        }
+        if (text == null || text.isBlank()) {
+            return "方块串不能为空";
+        }
+        try {
+            // allowNbt=true：方块串可以带 {…}（示例里的箱子 / 漏斗就带）
+            BlockArgumentParser.block(blocks, text, true);
+            return null;
+        } catch (CommandSyntaxException e) {
+            return e.getMessage();
+        }
+    }
+
+    /** 校验编号/坐标这类正整数串。 */
+    public static String validateNonNegativeInteger(String text) {
+        if (text == null || text.isBlank()) {
+            return "不能为空";
+        }
+        try {
+            if (Long.parseLong(text.trim()) < 0) {
+                return "不能为负数";
+            }
+            return null;
+        } catch (NumberFormatException e) {
+            return "不是整数";
+        }
+    }
+
+    /** 校验 "x y z" 形式的坐标串。 */
+    public static String validatePos(String text) {
+        return parsePos(text) == null ? "不是 \"x y z\" 形式的整数坐标" : null;
+    }
+
+    /** 解析 "x y z"；解析失败返回 null。 */
+    public static Integer[] parsePos(String text) {
+        if (text == null) {
+            return null;
+        }
+        String[] parts = text.trim().split("\\s+");
+        if (parts.length != 3) {
+            return null;
+        }
+        try {
+            return new Integer[]{Integer.parseInt(parts[0]), Integer.parseInt(parts[1]), Integer.parseInt(parts[2])};
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private static RegistryWrapper<Block> blocks() {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client.world == null) {
+            return null;
+        }
+        return client.world.getRegistryManager().getOrThrow(RegistryKeys.BLOCK);
+    }
+}

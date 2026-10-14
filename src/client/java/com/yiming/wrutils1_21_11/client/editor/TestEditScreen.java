@@ -1,0 +1,657 @@
+package com.yiming.wrutils1_21_11.client.editor;
+
+import com.yiming.wrutils1_21_11.test.io.TestPaths;
+import com.yiming.wrutils1_21_11.test.model.PlaceStep;
+import com.yiming.wrutils1_21_11.test.model.SetupBlock;
+import com.yiming.wrutils1_21_11.test.model.Step;
+import com.yiming.wrutils1_21_11.test.model.UseStep;
+import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.gui.Click;
+import net.minecraft.client.gui.DrawContext;
+import net.minecraft.client.gui.screen.Screen;
+import net.minecraft.client.gui.widget.ButtonWidget;
+import net.minecraft.client.gui.widget.TextFieldWidget;
+import net.minecraft.client.input.KeyInput;
+import net.minecraft.text.Text;
+import net.minecraft.util.math.BlockPos;
+import org.lwjgl.glfw.GLFW;
+
+import java.io.IOException;
+import java.nio.file.Path;
+
+/**
+ * 测试编辑器（Phase 5.3）：整窗编辑**一个**测试。
+ *
+ * <p>改动直接写进 {@link EditorSession} 的工作副本（绝对坐标），保存时才经
+ * {@code TestDefinitionWriter} 换算成相对 origin 的偏移。
+ *
+ * <p>方块串复用 {@code /setblock} 的解析器实时校验；字段一旦非法就标红，且**保存会被拒绝**——
+ * 不让坏串落盘。条目列表与左列一样是自绘 + 手动命中检测。
+ */
+public class TestEditScreen extends Screen {
+    private static final String TITLE = "WRT 编辑测试";
+    private static final int MARGIN = 8;
+    private static final int ROW_HEIGHT = 12;
+    private static final int FIELD_HEIGHT = 16;
+    private static final int META_ROW_1 = 30;
+    private static final int META_ROW_2 = 52;
+    private static final int LIST_TOP = 74;
+    private static final int BUTTON_GAP = 4;
+
+    private static final int COLOR_TITLE = 0xFFFFFFFF;
+    private static final int COLOR_TEXT = 0xFFE0E0E0;
+    private static final int COLOR_LABEL = 0xFFAAAAAA;
+    private static final int COLOR_ERROR = 0xFFFF5555;
+    private static final int COLOR_OK = 0xFF55FF55;
+    private static final int COLOR_SELECTED_BG = 0xFF3A6EA5;
+    private static final int COLOR_PANEL_BG = 0xC0000000;
+
+    private final EditorSession session = EditorSession.get();
+
+    private TextFieldWidget idField;
+    private TextFieldWidget timeoutField;
+    private TextFieldWidget originField;
+    private TextFieldWidget descField;
+    private ButtonWidget recordButton;
+    private TextFieldWidget tickField;
+    private TextFieldWidget posField;
+    private TextFieldWidget mainField;
+    private ButtonWidget typeButton;
+    private ButtonWidget pickPosButton;
+
+    /** -1 = 没选中；0..setup.size()-1 = setup 项；其余为 steps 项。 */
+    private int entryIndex = -1;
+    private int listScroll;
+    private String error;
+    private String status;
+    /** 程序化 setText 时抑制监听器回写，避免把旧值写到新选中的条目上。 */
+    private boolean suppress;
+    /** 当前选中项是否有"主字段"（方块串）：setup / place / assert 有，use 没有。 */
+    private boolean mainFieldApplies;
+    /** 焦点是在按钮回调之后才被 ParentElement 设置上去的，只能延后一帧清（见 {@link #tick()}）。 */
+    private boolean clearFocusNextTick;
+
+    public TestEditScreen() {
+        super(Text.literal(TITLE));
+    }
+
+    @Override
+    public boolean shouldPause() {
+        return true;
+    }
+
+    /** Esc 返回上一级（列表屏）并保留选中项，而不是直接关回游戏。 */
+    @Override
+    public boolean keyPressed(KeyInput input) {
+        if (input.key() == GLFW.GLFW_KEY_ESCAPE) {
+            backToList();
+            return true;
+        }
+        return super.keyPressed(input);
+    }
+
+    private void backToList() {
+        this.client.setScreen(new TestEditorScreen(session.id()));
+    }
+
+    /**
+     * 开始拾取：记下意图（写进哪个条目 / 当原点整体平移），关屏让玩家看世界，
+     * 按「拾取方块」键时由客户端 tick 里兑现（见 {@code Wrutils1_21_11Client.pickBlock}）。
+     */
+    private void beginPick(EditorSession.PickKind kind) {
+        if (kind == EditorSession.PickKind.ENTRY_POS) {
+            if (entryIndex < 0 || entryIndex >= entryCount()) {
+                error = "先在列表里选中一个条目，再拾取坐标";
+                return;
+            }
+            session.beginPick(kind, entryIndex);
+        } else {
+            session.beginPick(kind, -1);
+        }
+        error = null;
+        if (this.client.player != null) {
+            this.client.player.sendMessage(Text.literal(
+                    "[WRT] 准星对准方块，按「拾取方块」键填入坐标（默认 P）；想取消就按 K 回到列表"), false);
+        }
+        this.client.setScreen(null);
+    }
+
+    @Override
+    public void tick() {
+        super.tick();
+        // ParentElement.mouseClicked 的顺序是"先触发按钮回调、再 setFocused(按钮)"，
+        // 所以在回调里清焦点会被覆盖——只能延后一帧清，否则点过的按钮会一直保持高亮。
+        if (clearFocusNextTick) {
+            clearFocusNextTick = false;
+            this.setFocused(null);
+        }
+    }
+
+    // ---- 布局 ----
+
+    private int listBottom() {
+        return this.height - 84;
+    }
+
+    private int formRowY() {
+        return this.height - 78;
+    }
+
+    private int buttonRow1Y() {
+        return this.height - 50;
+    }
+
+    private int buttonRow2Y() {
+        return this.height - 26;
+    }
+
+    private int entryCount() {
+        return session.setup().size() + session.steps().size();
+    }
+
+    private boolean isSetupSelected() {
+        return entryIndex >= 0 && entryIndex < session.setup().size();
+    }
+
+    private int stepIndexOf() {
+        return entryIndex - session.setup().size();
+    }
+
+    private int maxScroll() {
+        int visible = Math.max(0, (listBottom() - LIST_TOP) / ROW_HEIGHT);
+        return Math.max(0, entryCount() - visible) * ROW_HEIGHT;
+    }
+
+    // ---- 构建 ----
+
+    @Override
+    protected void init() {
+        int usable = this.width - MARGIN * 2;
+
+        idField = add(new TextFieldWidget(this.textRenderer, 22, META_ROW_1, 74, FIELD_HEIGHT, Text.literal("id")));
+        idField.setMaxLength(64);
+        idField.setText(session.id());
+        idField.setChangedListener(value -> {
+            if (!suppress) {
+                session.setId(value);
+            }
+        });
+
+        timeoutField = add(new TextFieldWidget(this.textRenderer, 126, META_ROW_1, 36, FIELD_HEIGHT, Text.literal("超时")));
+        timeoutField.setText(Long.toString(session.timeoutTicks()));
+        timeoutField.setChangedListener(value -> {
+            if (suppress) {
+                return;
+            }
+            String problem = BlockStringValidator.validateNonNegativeInteger(value);
+            timeoutField.setEditableColor(problem == null ? COLOR_TEXT : COLOR_ERROR);
+            if (problem == null) {
+                session.setTimeoutTicks(Long.parseLong(value.trim()));
+            }
+        });
+
+        recordButton = ButtonWidget.builder(Text.literal(""), button -> {
+            session.setRecord(!session.record());
+            button.setMessage(recordLabel());
+        }).dimensions(168, META_ROW_1, 64, FIELD_HEIGHT).build();
+        recordButton.setMessage(recordLabel());
+        addDrawableChild(recordButton);
+
+        originField = add(new TextFieldWidget(this.textRenderer, 34, META_ROW_2, 90, FIELD_HEIGHT, Text.literal("x y z")));
+        originField.setText(formatPlain(session.origin()));
+        originField.setChangedListener(value -> {
+            if (suppress) {
+                return;
+            }
+            Integer[] pos = BlockStringValidator.parsePos(value);
+            originField.setEditableColor(pos == null ? COLOR_ERROR : COLOR_TEXT);
+            if (pos != null) {
+                // 改 origin 一律是**整体平移**：所有坐标同加 delta，相对偏移不变
+                session.translateOriginTo(new BlockPos(pos[0], pos[1], pos[2]));
+            }
+        });
+
+        descField = add(new TextFieldWidget(this.textRenderer, 154, META_ROW_2, usable - 146, FIELD_HEIGHT,
+                Text.literal("描述")));
+        descField.setMaxLength(200);
+        descField.setText(session.description());
+        descField.setChangedListener(value -> {
+            if (!suppress) {
+                session.setDescription(value);
+            }
+        });
+
+        // 条目表单：三格都靠 placeholder 自解释（tick / 坐标 / 方块串）
+        int formWidth = (usable - BUTTON_GAP * 2) / 3;
+        tickField = add(new TextFieldWidget(this.textRenderer, MARGIN, formRowY(), formWidth, FIELD_HEIGHT,
+                Text.literal("tick")));
+        tickField.setChangedListener(value -> {
+            if (suppress || entryIndex < 0 || isSetupSelected()) {
+                return;
+            }
+            String problem = BlockStringValidator.validateNonNegativeInteger(value);
+            tickField.setEditableColor(problem == null ? COLOR_TEXT : COLOR_ERROR);
+            if (problem != null) {
+                return;
+            }
+            int index = stepIndexOf();
+            session.steps().set(index, StepEditor.withTick(session.steps().get(index), Long.parseLong(value.trim())));
+        });
+
+        posField = add(new TextFieldWidget(this.textRenderer, MARGIN + formWidth + BUTTON_GAP, formRowY(),
+                formWidth, FIELD_HEIGHT, Text.literal("x y z")));
+        posField.setChangedListener(value -> {
+            if (suppress || entryIndex < 0) {
+                return;
+            }
+            Integer[] pos = BlockStringValidator.parsePos(value);
+            posField.setEditableColor(pos == null ? COLOR_ERROR : COLOR_TEXT);
+            if (pos == null) {
+                return;
+            }
+            BlockPos blockPos = new BlockPos(pos[0], pos[1], pos[2]);
+            if (isSetupSelected()) {
+                SetupBlock old = session.setup().get(entryIndex);
+                session.setup().set(entryIndex, new SetupBlock(blockPos, old.block()));
+            } else {
+                int index = stepIndexOf();
+                session.steps().set(index, StepEditor.withPos(session.steps().get(index), blockPos));
+            }
+        });
+
+        mainField = add(new TextFieldWidget(this.textRenderer, MARGIN + (formWidth + BUTTON_GAP) * 2, formRowY(),
+                formWidth, FIELD_HEIGHT, Text.literal("方块串")));
+        mainField.setMaxLength(512);
+        mainField.setChangedListener(value -> {
+            if (suppress || entryIndex < 0) {
+                return;
+            }
+            String problem = BlockStringValidator.validate(value);
+            mainField.setEditableColor(problem == null ? COLOR_TEXT : COLOR_ERROR);
+            if (isSetupSelected()) {
+                session.setup().set(entryIndex, new SetupBlock(session.setup().get(entryIndex).pos(), value));
+            } else {
+                int index = stepIndexOf();
+                session.steps().set(index, StepEditor.withMainField(session.steps().get(index), value));
+            }
+        });
+
+        int sixWidth = (usable - BUTTON_GAP * 5) / 6;
+        int x = MARGIN;
+        typeButton = ButtonWidget.builder(Text.literal("类型"), button -> cycleType())
+                .dimensions(x, buttonRow1Y(), sixWidth, 20).build();
+        addDrawableChild(typeButton);
+        x += sixWidth + BUTTON_GAP;
+        addDrawableChild(ButtonWidget.builder(Text.literal("＋setup"), button -> addSetup())
+                .dimensions(x, buttonRow1Y(), sixWidth, 20).build());
+        x += sixWidth + BUTTON_GAP;
+        addDrawableChild(ButtonWidget.builder(Text.literal("＋step"), button -> addStep())
+                .dimensions(x, buttonRow1Y(), sixWidth, 20).build());
+        x += sixWidth + BUTTON_GAP;
+        addDrawableChild(ButtonWidget.builder(Text.literal("删除"), button -> deleteEntry())
+                .dimensions(x, buttonRow1Y(), sixWidth, 20).build());
+        x += sixWidth + BUTTON_GAP;
+        addDrawableChild(ButtonWidget.builder(Text.literal("上移"), button -> moveEntry(-1))
+                .dimensions(x, buttonRow1Y(), sixWidth, 20).build());
+        x += sixWidth + BUTTON_GAP;
+        addDrawableChild(ButtonWidget.builder(Text.literal("下移"), button -> moveEntry(1))
+                .dimensions(x, buttonRow1Y(), sixWidth, 20).build());
+
+        x = MARGIN;
+        pickPosButton = ButtonWidget.builder(Text.literal("拾取坐标"),
+                        button -> beginPick(EditorSession.PickKind.ENTRY_POS))
+                .dimensions(x, buttonRow2Y(), sixWidth, 20).build();
+        addDrawableChild(pickPosButton);
+        x += sixWidth + BUTTON_GAP;
+        addDrawableChild(ButtonWidget.builder(Text.literal("拾取原点"),
+                        button -> beginPick(EditorSession.PickKind.ORIGIN))
+                .dimensions(x, buttonRow2Y(), sixWidth, 20).build());
+        x += sixWidth + BUTTON_GAP;
+        addDrawableChild(ButtonWidget.builder(Text.literal("可写区"),
+                        button -> this.client.setScreen(new TestAreaScreen()))
+                .dimensions(x, buttonRow2Y(), sixWidth, 20).build());
+        x += sixWidth + BUTTON_GAP;
+        addDrawableChild(ButtonWidget.builder(Text.literal("保存"), button -> save(false))
+                .dimensions(x, buttonRow2Y(), sixWidth, 20).build());
+        x += sixWidth + BUTTON_GAP;
+        // 「运行」= 先校验并保存，再跑——不允许"跑磁盘上的旧版本"，那只会让人困惑
+        addDrawableChild(ButtonWidget.builder(Text.literal("运行"), button -> save(true))
+                .dimensions(x, buttonRow2Y(), sixWidth, 20).build());
+        x += sixWidth + BUTTON_GAP;
+        addDrawableChild(ButtonWidget.builder(Text.literal("返回列表"), button -> backToList())
+                .dimensions(x, buttonRow2Y(), sixWidth, 20).build());
+
+        if (entryIndex >= entryCount()) {
+            entryIndex = entryCount() - 1;
+        }
+        listScroll = Math.max(0, Math.min(maxScroll(), listScroll));
+        syncFormFromSelection();
+    }
+
+    private TextFieldWidget add(TextFieldWidget field) {
+        return addDrawableChild(field);
+    }
+
+    /**
+     * 禁用输入框要连 {@code active} 一起关：只 {@code setEditable(false)} 的话，
+     * {@code ClickableWidget.mouseClicked} 照样会被调用（它只查 {@code isInteractable()}），
+     * 表现为"点一下闪出高亮、随后又变灰"。
+     */
+    private void setFieldEnabled(TextFieldWidget field, boolean enabled) {
+        field.setEditable(enabled);
+        field.active = enabled;
+    }
+
+    private Text recordLabel() {
+        return Text.literal(session.record() ? "录制:开" : "录制:关");
+    }
+
+    // ---- 条目操作 ----
+
+    private void syncFormFromSelection() {
+        suppress = true;
+        boolean hasEntry = entryIndex >= 0 && entryIndex < entryCount();
+        if (!hasEntry) {
+            tickField.setText("");
+            posField.setText("");
+            mainField.setText("");
+            setFieldEnabled(tickField, false);
+            setFieldEnabled(posField, false);
+            setFieldEnabled(mainField, false);
+            mainFieldApplies = false;
+            typeButton.active = false;
+            typeButton.setMessage(Text.literal("类型"));
+        } else if (isSetupSelected()) {
+            SetupBlock block = session.setup().get(entryIndex);
+            tickField.setText("");
+            setFieldEnabled(tickField, false);
+            posField.setText(formatPlain(block.pos()));
+            setFieldEnabled(posField, true);
+            mainField.setText(block.block());
+            setFieldEnabled(mainField, true);
+            mainFieldApplies = true;
+            typeButton.active = false;
+            typeButton.setMessage(Text.literal("类型:setup"));
+        } else {
+            Step step = session.steps().get(stepIndexOf());
+            tickField.setText(Long.toString(step.tick()));
+            setFieldEnabled(tickField, true);
+            posField.setText(formatPlain(StepEditor.posOf(step)));
+            setFieldEnabled(posField, true);
+            mainField.setText(StepEditor.mainField(step));
+            mainFieldApplies = StepEditor.typeOf(step) != StepEditor.Type.USE;
+            setFieldEnabled(mainField, mainFieldApplies);
+            typeButton.active = true;
+            typeButton.setMessage(Text.literal("类型:" + StepEditor.typeOf(step).label()));
+        }
+        tickField.setEditableColor(COLOR_TEXT);
+        posField.setEditableColor(COLOR_TEXT);
+        mainField.setEditableColor(COLOR_TEXT);
+        pickPosButton.active = hasEntry;
+        suppress = false;
+    }
+
+    private void cycleType() {
+        if (entryIndex < 0 || isSetupSelected() || stepIndexOf() >= session.steps().size()) {
+            return;
+        }
+        int index = stepIndexOf();
+        Step step = session.steps().get(index);
+        session.steps().set(index, StepEditor.convert(step, StepEditor.typeOf(step).next()));
+        syncFormFromSelection();
+    }
+
+    private void addSetup() {
+        session.setup().add(new SetupBlock(session.origin(), "minecraft:stone"));
+        entryIndex = session.setup().size() - 1;
+        revealSelection();
+        syncFormFromSelection();
+    }
+
+    private void addStep() {
+        session.steps().add(new PlaceStep(0L, session.origin(), "minecraft:stone"));
+        entryIndex = entryCount() - 1;
+        revealSelection();
+        syncFormFromSelection();
+    }
+
+    private void deleteEntry() {
+        if (entryIndex < 0 || entryIndex >= entryCount()) {
+            return;
+        }
+        if (isSetupSelected()) {
+            session.setup().remove(entryIndex);
+        } else {
+            session.steps().remove(stepIndexOf());
+        }
+        entryIndex = Math.min(entryIndex, entryCount() - 1);
+        listScroll = Math.max(0, Math.min(maxScroll(), listScroll));
+        syncFormFromSelection();
+    }
+
+    /** 只在同一段内换位（setup 与 steps 是两个独立列表，跨界换位没有意义）。 */
+    private void moveEntry(int delta) {
+        if (entryIndex < 0 || entryIndex >= entryCount()) {
+            return;
+        }
+        if (isSetupSelected()) {
+            int target = entryIndex + delta;
+            if (target < 0 || target >= session.setup().size()) {
+                return;
+            }
+            SetupBlock block = session.setup().remove(entryIndex);
+            session.setup().add(target, block);
+        } else {
+            int index = stepIndexOf();
+            int target = index + delta;
+            if (target < 0 || target >= session.steps().size()) {
+                return;
+            }
+            Step step = session.steps().remove(index);
+            session.steps().add(target, step);
+        }
+        entryIndex += delta;
+        revealSelection();
+    }
+
+    private void revealSelection() {
+        int rowY = (entryIndex) * ROW_HEIGHT;
+        if (rowY < listScroll) {
+            listScroll = rowY;
+        } else if (rowY + ROW_HEIGHT > listScroll + (listBottom() - LIST_TOP)) {
+            listScroll = rowY + ROW_HEIGHT - (listBottom() - LIST_TOP);
+        }
+        listScroll = Math.max(0, Math.min(maxScroll(), listScroll));
+    }
+
+    // ---- 保存 ----
+
+    private void save(boolean andRun) {
+        error = null;
+        status = null;
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client.getServer() == null) {
+            error = "编辑器仅支持单人存档";
+            return;
+        }
+        String problem = validateAll();
+        if (problem != null) {
+            error = problem;
+            return;
+        }
+        session.widenInputToFit();
+        String id = session.id().trim();
+        Path target = TestPaths.testFile(client.getServer(), id);
+        try {
+            session.save(target);
+        } catch (IOException e) {
+            error = "写入失败: " + e;
+            return;
+        }
+        if (!andRun) {
+            status = "已保存 " + target.getFileName();
+            return;
+        }
+        if (client.getNetworkHandler() != null) {
+            client.getNetworkHandler().sendChatCommand("wrutils test run " + id);
+        }
+        // 必须先关屏：shouldPause() = true 会让世界暂停，run 永远推进不了
+        this.close();
+    }
+
+    /** 返回第一条问题；全通过返回 null。坏串一律不许落盘。 */
+    private String validateAll() {
+        String id = session.id().trim();
+        if (id.isEmpty()) {
+            return "id 不能为空";
+        }
+        if (!id.matches("[A-Za-z0-9_\\-]+")) {
+            return "id 只能包含字母、数字、下划线、减号";
+        }
+        if (BlockStringValidator.validateNonNegativeInteger(timeoutField.getText()) != null) {
+            return "超时 tick 不合法";
+        }
+        if (BlockStringValidator.parsePos(originField.getText()) == null) {
+            return "原点不合法（应为 \"x y z\"）";
+        }
+        if (entryIndex >= 0 && entryIndex < entryCount()) {
+            if (BlockStringValidator.parsePos(posField.getText()) == null) {
+                return "选中项的坐标不合法（应为 \"x y z\"）";
+            }
+            if (!isSetupSelected() && BlockStringValidator.validateNonNegativeInteger(tickField.getText()) != null) {
+                return "选中项的 tick 不合法";
+            }
+            if (mainFieldApplies) {
+                String problem = BlockStringValidator.validate(mainField.getText());
+                if (problem != null) {
+                    return "选中项的方块串非法: " + problem;
+                }
+            }
+        }
+        for (int i = 0; i < session.setup().size(); i++) {
+            String problem = BlockStringValidator.validate(session.setup().get(i).block());
+            if (problem != null) {
+                return "setup[" + i + "] 方块串非法: " + problem;
+            }
+        }
+        for (int i = 0; i < session.steps().size(); i++) {
+            Step step = session.steps().get(i);
+            if (step instanceof PlaceStep place) {
+                String problem = BlockStringValidator.validate(place.block());
+                if (problem != null) {
+                    return "steps[" + i + "] 方块串非法: " + problem;
+                }
+            } else if (StepEditor.typeOf(step) == StepEditor.Type.ASSERT) {
+                String block = StepEditor.mainField(step);
+                if (!block.isBlank()) {
+                    String problem = BlockStringValidator.validate(block);
+                    if (problem != null) {
+                        return "steps[" + i + "] 期望方块串非法: " + problem;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    // ---- 输入 ----
+
+    @Override
+    public boolean mouseClicked(Click click, boolean doubled) {
+        if (super.mouseClicked(click, doubled)) {
+            // 点按钮会拿到焦点、留下高亮框，所以要清；
+            // 但点文本框必须**保留**焦点，否则一松手就失去焦点、没法输入。
+            clearFocusNextTick = !(this.getFocused() instanceof TextFieldWidget);
+            return true;
+        }
+        if (click.button() == 0 && click.y() >= LIST_TOP && click.y() < listBottom()) {
+            int index = (int) ((click.y() - LIST_TOP + listScroll) / ROW_HEIGHT);
+            if (index >= 0 && index < entryCount()) {
+                entryIndex = index;
+                syncFormFromSelection();
+                return true;
+            }
+        }
+        return false;
+    }
+
+    @Override
+    public boolean mouseScrolled(double mouseX, double mouseY, double horizontalAmount, double verticalAmount) {
+        if (mouseY >= LIST_TOP && mouseY < listBottom()) {
+            int step = (int) Math.round(verticalAmount) * ROW_HEIGHT;
+            listScroll = Math.max(0, Math.min(maxScroll(), listScroll - step));
+            return true;
+        }
+        return super.mouseScrolled(mouseX, mouseY, horizontalAmount, verticalAmount);
+    }
+
+    // ---- 绘制 ----
+
+    @Override
+    public void render(DrawContext context, int mouseX, int mouseY, float delta) {
+        super.render(context, mouseX, mouseY, delta);
+        context.drawTextWithShadow(this.textRenderer, TITLE + "  " + session.id() + "  (" + entryCount() + " 项)",
+                MARGIN, 8, COLOR_TITLE);
+        context.drawTextWithShadow(this.textRenderer, "id", MARGIN, META_ROW_1 + 4, COLOR_LABEL);
+        context.drawTextWithShadow(this.textRenderer, "超时", 102, META_ROW_1 + 4, COLOR_LABEL);
+        context.drawTextWithShadow(this.textRenderer, "原点", MARGIN, META_ROW_2 + 4, COLOR_LABEL);
+        context.drawTextWithShadow(this.textRenderer, "描述", 128, META_ROW_2 + 4, COLOR_LABEL);
+
+        renderEntryList(context);
+
+        if (error != null) {
+            context.drawTextWithShadow(this.textRenderer, error, MARGIN, this.height - 70, COLOR_ERROR);
+        } else if (status != null) {
+            context.drawTextWithShadow(this.textRenderer, status, MARGIN, this.height - 70, COLOR_OK);
+        } else {
+            int usable = this.width - MARGIN * 2;
+            String hint = "setup[" + session.setup().size() + "] / steps[" + session.steps().size() + "]"
+                    + "  选中条目后可改 tick、坐标、方块串";
+            context.drawTextWithShadow(this.textRenderer, hint, MARGIN, formRowY() - 12, COLOR_LABEL);
+        }
+    }
+
+    private void renderEntryList(DrawContext context) {
+        int bottom = listBottom();
+        context.fill(MARGIN - 2, LIST_TOP - 2, this.width - MARGIN + 2, bottom, COLOR_PANEL_BG);
+        context.enableScissor(MARGIN - 2, LIST_TOP, this.width - MARGIN + 2, bottom);
+        for (int i = 0; i < entryCount(); i++) {
+            int rowY = LIST_TOP + i * ROW_HEIGHT - listScroll;
+            if (rowY + ROW_HEIGHT <= LIST_TOP || rowY >= bottom) {
+                continue;
+            }
+            boolean selected = i == entryIndex;
+            if (selected) {
+                context.fill(MARGIN - 2, rowY - 1, this.width - MARGIN + 2, rowY + ROW_HEIGHT - 1, COLOR_SELECTED_BG);
+            }
+            context.drawTextWithShadow(this.textRenderer, entryLabel(i), MARGIN, rowY,
+                    selected ? COLOR_TITLE : COLOR_TEXT);
+        }
+        context.disableScissor();
+    }
+
+    private String entryLabel(int index) {
+        if (index < session.setup().size()) {
+            SetupBlock block = session.setup().get(index);
+            return "setup[" + index + "] " + format(block.pos()) + " " + block.block();
+        }
+        int stepIndex = index - session.setup().size();
+        Step step = session.steps().get(stepIndex);
+        String head = "step[" + stepIndex + "] t" + step.tick() + " ";
+        if (step instanceof PlaceStep place) {
+            return head + "place " + format(place.pos()) + " " + place.block();
+        }
+        if (step instanceof UseStep use) {
+            return head + "use " + format(use.pos()) + " " + use.side().name() + "/" + use.hand().name();
+        }
+        return head + "assert " + format(StepEditor.posOf(step)) + " " + StepEditor.mainField(step);
+    }
+
+    private static String format(BlockPos pos) {
+        return "(" + pos.getX() + ", " + pos.getY() + ", " + pos.getZ() + ")";
+    }
+
+    private static String formatPlain(BlockPos pos) {
+        return pos.getX() + " " + pos.getY() + " " + pos.getZ();
+    }
+}

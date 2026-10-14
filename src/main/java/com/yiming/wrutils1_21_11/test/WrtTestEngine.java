@@ -38,7 +38,8 @@ public final class WrtTestEngine {
     private static final int CLEANUP_RETRIES = 5;
 
     private MinecraftServer server;
-    private TestRun currentRun;
+    // volatile：单人集成服务器下客户端（渲染线程）会直接读它做编辑器互斥
+    private volatile TestRun currentRun;
 
     private RecordingConfig recordingConfig = RecordingConfig.load();
     private RecordingBackend recordingBackend = NoopRecordingBackend.INSTANCE;
@@ -83,6 +84,32 @@ public final class WrtTestEngine {
 
     public RecordingConfig recordingConfig() {
         return recordingConfig;
+    }
+
+    /** 编辑器互斥用：单跑 / 批跑 / 录制探测任一在进行即为真。单人下客户端直接读。 */
+    public boolean isRunning() {
+        return currentRun != null || !pending.isEmpty() || probeSession != null;
+    }
+
+    /**
+     * {@code /wrutils test stop}：中止当前 run、清空批跑队列、停掉录制探测。
+     * 返回是否真的停掉了什么。
+     */
+    public boolean stop() {
+        boolean stopped = currentRun != null || probeSession != null || !pending.isEmpty();
+        // 先清队列：否则当前 run 收尾后 onEndWorldTick 会自动开始下一个测试
+        clearBatch();
+        if (probeSession != null) {
+            RecordingSession session = probeSession;
+            probeSession = null;
+            probeWorld = null;
+            probeFeedback = null;
+            session.stop(server, true);
+        }
+        if (currentRun != null) {
+            currentRun.abort();
+        }
+        return stopped;
     }
 
     /** 单跑一次。构造失败（如 gamerule 名字写错）直接抛给命令层显示可读错误。 */

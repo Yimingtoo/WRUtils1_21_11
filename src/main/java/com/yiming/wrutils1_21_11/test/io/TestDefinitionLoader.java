@@ -37,13 +37,33 @@ public final class TestDefinitionLoader {
      * x/y/z 是坐标、id 是方块实体类型、components 是空/组件容器（1.21 起方块实体也带 components）。
      * 需要断言 components 时用 {@code nbtIgnore} 显式覆盖。
      */
-    private static final List<String> DEFAULT_NBT_IGNORE_KEYS = List.of("x", "y", "z", "id", "components");
+    static final List<String> DEFAULT_NBT_IGNORE_KEYS = List.of("x", "y", "z", "id", "components");
 
     private TestDefinitionLoader() {
     }
 
     public static TestDefinition load(Path file) throws IOException {
-        JsonObject root = JsonParser.parseString(Files.readString(file)).getAsJsonObject();
+        return parse(Files.readString(file), file.toString());
+    }
+
+    /**
+     * 坐标一律是**相对 origin 的偏移**，由顶层 {@code schemaVersion} 标记。
+     * 旧格式（无 schemaVersion、坐标为绝对值）已废弃，直接拒绝——不做任何启发式猜测，
+     * 猜错就是静默跑错，宁可报错。
+     */
+    public static TestDefinition parse(String json, String sourceName) {
+        JsonObject root = JsonParser.parseString(json).getAsJsonObject();
+
+        if (!root.has("schemaVersion")) {
+            throw new IllegalArgumentException(sourceName + ": 缺少 schemaVersion（旧的绝对坐标格式已废弃，"
+                    + "坐标现为相对 origin 的偏移，迁移后请补上 \"schemaVersion\": "
+                    + TestDefinitionWriter.SCHEMA_VERSION + "）");
+        }
+        int schemaVersion = root.get("schemaVersion").getAsInt();
+        if (schemaVersion != TestDefinitionWriter.SCHEMA_VERSION) {
+            throw new IllegalArgumentException(sourceName + ": 不支持的 schemaVersion=" + schemaVersion
+                    + "（当前为 " + TestDefinitionWriter.SCHEMA_VERSION + "）");
+        }
 
         String id = root.get("id").getAsString();
         String description = optString(root, "description", "");
@@ -53,33 +73,33 @@ public final class TestDefinitionLoader {
         if (root.has("isolate")) {
             throw new IllegalArgumentException("字段 isolate 已改名为 area，请重命名");
         }
-        AreaSpec area = readArea(root.getAsJsonObject("area"));
+        AreaSpec area = readArea(root.getAsJsonObject("area"), origin);
 
         List<SetupBlock> setup = new ArrayList<>();
         if (root.has("setup")) {
             for (JsonElement element : root.getAsJsonArray("setup")) {
                 JsonObject entry = element.getAsJsonObject();
-                setup.add(new SetupBlock(readPos(entry.get("pos")), entry.get("block").getAsString()));
+                setup.add(new SetupBlock(readStored(entry.get("pos"), origin), entry.get("block").getAsString()));
             }
         }
         List<Step> steps = new ArrayList<>();
         for (JsonElement element : root.getAsJsonArray("steps")) {
-            steps.add(readStep(element.getAsJsonObject()));
+            steps.add(readStep(element.getAsJsonObject(), origin));
         }
         return new TestDefinition(id, description, dimension, origin, timeoutTicks, area,
                 List.copyOf(setup), List.copyOf(steps), !root.has("record") || root.get("record").getAsBoolean());
     }
 
-    private static AreaSpec readArea(JsonObject area) {
+    private static AreaSpec readArea(JsonObject area, BlockPos origin) {
         if (area == null) {
             return null;
         }
         // Phase 2 的 radius/clearArea 是全区域清空的破坏性语义，已废弃
         if (area.has("radius") || area.has("clearArea")) {
             throw new IllegalArgumentException(
-                    "area.radius/clearArea 已废弃：改用 area.input{min,max}（可写区）+ area.cleanup");
+                    "area.radius/clearArea 已废弃：改用 area.input（可写区数组）+ area.cleanup");
         }
-        Region input = area.has("input") ? readRegion(area.getAsJsonObject("input")) : null;
+        List<Region> inputs = readInputs(area, origin);
         CleanupMode cleanup = switch (optString(area, "cleanup", "clear_input").toLowerCase(Locale.ROOT)) {
             case "clear_input", "clear" -> CleanupMode.CLEAR_INPUT;
             case "none", "keep" -> CleanupMode.NONE;
@@ -94,21 +114,42 @@ public final class TestDefinitionLoader {
             }
         }
         return new AreaSpec(
-                input,
+                inputs,
                 cleanup,
                 area.has("forceChunks") && area.get("forceChunks").getAsBoolean(),
                 area.has("clearEntities") && area.get("clearEntities").getAsBoolean(),
                 Map.copyOf(gameRules));
     }
 
-    private static Region readRegion(JsonObject region) {
-        return Region.of(readPos(region.get("min")), readPos(region.get("max")));
+    /**
+     * 可写区是**数组**（schemaVersion 3 起支持多个）；键缺失或为 null 表示不允许任何写入。
+     * 单个矩形写成对象（v2 的旧形状）会**直接报错**，不做形状猜测。
+     */
+    private static List<Region> readInputs(JsonObject area, BlockPos origin) {
+        JsonElement element = area.get("input");
+        if (element == null || element.isJsonNull()) {
+            return List.of();
+        }
+        if (!element.isJsonArray()) {
+            throw new IllegalArgumentException(
+                    "area.input 必须是数组（schemaVersion 3 起可写区可以有多个），"
+                            + "例如 \"input\": [{ \"min\": [0,0,0], \"max\": [1,0,0] }]");
+        }
+        List<Region> inputs = new ArrayList<>();
+        for (JsonElement entry : element.getAsJsonArray()) {
+            inputs.add(readRegion(entry.getAsJsonObject(), origin));
+        }
+        return inputs;
     }
 
-    private static Step readStep(JsonObject step) {
+    private static Region readRegion(JsonObject region, BlockPos origin) {
+        return Region.of(readStored(region.get("min"), origin), readStored(region.get("max"), origin));
+    }
+
+    private static Step readStep(JsonObject step, BlockPos origin) {
         String action = step.get("action").getAsString();
         long tick = step.get("tick").getAsLong();
-        BlockPos pos = readPos(step.get("pos"));
+        BlockPos pos = readStored(step.get("pos"), origin);
         return switch (action) {
             case "place" -> new PlaceStep(tick, pos, step.get("block").getAsString());
             case "use" -> new UseStep(tick, pos, readDirection(step, "side", Direction.UP), readHand(step, "hand"));
@@ -169,6 +210,11 @@ public final class TestDefinitionLoader {
             case "off", "off_hand" -> Hand.OFF_HAND;
             default -> Hand.MAIN_HAND;
         };
+    }
+
+    /** JSON 里的 pos 存的是相对 origin 的偏移，读成绝对坐标。 */
+    private static BlockPos readStored(JsonElement element, BlockPos origin) {
+        return origin.add(readPos(element));
     }
 
     private static BlockPos readPos(JsonElement element) {
