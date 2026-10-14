@@ -89,31 +89,31 @@ public final class TestRun {
         }
     }
 
-    /** place/use 会修改方块，两者都必须落在可写区内；assert 不受限。 */
+    /** place/use 会修改方块，两者都必须落在**任一**可写区内；assert 不受限。 */
     private static void validateWritable(TestDefinition definition, List<Step> steps) {
         AreaSpec area = definition.area();
-        Region input = area == null ? null : area.input();
+        List<Region> inputs = area == null ? List.of() : area.inputs();
         for (Step step : steps) {
             BlockPos pos = writablePos(step);
             if (pos == null) {
                 continue;
             }
-            if (input == null) {
+            if (inputs.isEmpty()) {
                 throw new IllegalArgumentException(
                         describeKind(step) + " 位置 (" + coords(pos) + ") 需要写入方块，但未定义 area.input 可写区");
             }
-            if (!input.contains(pos)) {
+            if (!area.allows(pos)) {
                 throw new IllegalArgumentException(
-                        describeKind(step) + " 位置 (" + coords(pos) + ") 在可写区 " + describeRegion(input)
+                        describeKind(step) + " 位置 (" + coords(pos) + ") 在可写区 " + describeInputs(inputs)
                                 + " 之外：只有输入区内的方块可以被修改");
             }
         }
     }
 
-    /** 强制区块/清实体的范围：可写区 ∪ 全部步骤坐标（含 assert，机器要 tick 才读得准）。 */
+    /** 强制区块/清实体的范围：可写区包围盒 ∪ 全部步骤坐标（含 assert，机器要 tick 才读得准）。 */
     private static Region chunkRegion(TestDefinition definition, List<Step> steps) {
         AreaSpec area = definition.area();
-        Region region = area != null ? area.input() : null;
+        Region region = area != null ? area.bounds() : null;
         for (Step step : steps) {
             BlockPos pos = anyPos(step);
             if (pos == null) {
@@ -157,6 +157,17 @@ public final class TestRun {
 
     private static String describeRegion(Region region) {
         return "[" + coords(region.min()) + "]..[" + coords(region.max()) + "]";
+    }
+
+    private static String describeInputs(List<Region> inputs) {
+        StringBuilder text = new StringBuilder();
+        for (int i = 0; i < inputs.size(); i++) {
+            if (i > 0) {
+                text.append(" | ");
+            }
+            text.append(describeRegion(inputs.get(i)));
+        }
+        return text.toString();
     }
 
     private static List<Step> flatten(TestDefinition definition) {
@@ -284,6 +295,17 @@ public final class TestRun {
             recordingSession = null;
             session.stop(world.getServer(), true);
         }
+    }
+
+    /**
+     * 用户显式停止（{@code /wrutils test stop}）：按 {@link RunState#ABORTED} 正常收尾——
+     * 走 {@code finish} 即会还原 gamerule/强制区块、保留录制现场、落盘报告并播报，幂等。
+     */
+    public void abort() {
+        if (state != RunState.RUNNING) {
+            return;
+        }
+        finish(RunState.ABORTED);
     }
 
     private RecordingSession startRecording(RecordingBackend backend) {

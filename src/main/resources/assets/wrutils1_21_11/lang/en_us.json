@@ -1,3 +1,5 @@
 {
-  "key.wrutils1_21_11.toggle_item_entity_id": "Toggle Dropped Item Entity ID"
+  "key.wrutils1_21_11.toggle_item_entity_id": "Toggle Dropped Item Entity ID",
+  "key.wrutils1_21_11.open_editor": "Open WRT Test Editor",
+  "key.wrutils1_21_11.pick_block": "Pick Block Coords (editor)"
 }
