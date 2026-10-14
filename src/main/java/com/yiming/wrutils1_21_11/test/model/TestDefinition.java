@@ -10,7 +10,13 @@ public record TestDefinition(
         String dimension,
         BlockPos origin,
         long timeoutTicks,
-        IsolationSpec isolate,
+        AreaSpec area,
         List<SetupBlock> setup,
-        List<Step> steps) {
+        List<Step> steps,
+        boolean record) {
+
+    /** 供命令行的 --record/--no-record 覆盖本文件的 record 设置。 */
+    public TestDefinition withRecord(boolean value) {
+        return new TestDefinition(id, description, dimension, origin, timeoutTicks, area, setup, steps, value);
+    }
 }
