@@ -4,6 +4,9 @@ import com.yiming.wrutils1_21_11.client.editor.EditorSession;
 import com.yiming.wrutils1_21_11.client.editor.TestAreaScreen;
 import com.yiming.wrutils1_21_11.client.editor.TestEditScreen;
 import com.yiming.wrutils1_21_11.client.editor.TestEditorScreen;
+import com.yiming.wrutils1_21_11.client.selection.SelectionHud;
+import com.yiming.wrutils1_21_11.client.selection.SelectionRenderer;
+import com.yiming.wrutils1_21_11.client.selection.SelectionTool;
 import com.yiming.wrutils1_21_11.test.WrtTestEngine;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
@@ -25,6 +28,11 @@ public class Wrutils1_21_11Client implements ClientModInitializer {
 
     @Override
     public void onInitializeClient() {
+        // 燧石选区：左键 pos1 / 右键 pos2，并把选区画成线框 + 左下角状态提示
+        SelectionTool.register();
+        SelectionRenderer.register();
+        SelectionHud.register();
+
         KeyBinding toggleKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
                 "key.wrutils1_21_11.toggle_item_entity_id",
                 InputUtil.Type.KEYSYM,
@@ -40,6 +48,11 @@ public class Wrutils1_21_11Client implements ClientModInitializer {
                 InputUtil.Type.KEYSYM,
                 GLFW.GLFW_KEY_P,
                 KeyBinding.Category.MISC));
+        KeyBinding selectionKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+                "key.wrutils1_21_11.toggle_selection",
+                InputUtil.Type.KEYSYM,
+                GLFW.GLFW_KEY_J,
+                KeyBinding.Category.MISC));
 
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             while (toggleKey.wasPressed()) {
@@ -50,6 +63,13 @@ public class Wrutils1_21_11Client implements ClientModInitializer {
             }
             while (pickKey.wasPressed()) {
                 pickBlock(client);
+            }
+            while (selectionKey.wasPressed()) {
+                // 开关一按就有反馈（HUD 也会跟着出现/消失，但动作栏能给一次明确回应）
+                boolean on = SelectionTool.toggle();
+                if (client.player != null) {
+                    client.player.sendMessage(Text.literal("[WRT] 选区工具：" + (on ? "开启" : "关闭")), true);
+                }
             }
         });
     }
