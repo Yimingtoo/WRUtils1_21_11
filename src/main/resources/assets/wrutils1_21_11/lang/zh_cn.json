@@ -1,5 +1,6 @@
 {
   "key.wrutils1_21_11.toggle_item_entity_id": "开关掉落物实体ID显示",
   "key.wrutils1_21_11.open_editor": "打开测试编辑器",
-  "key.wrutils1_21_11.pick_block": "拾取方块坐标（编辑器）"
+  "key.wrutils1_21_11.pick_block": "拾取方块坐标（编辑器）",
+  "key.wrutils1_21_11.toggle_selection": "开关选区工具（燧石左键pos1/右键pos2）"
 }
