@@ -1,7 +1,10 @@
 package com.yiming.wrutils1_21_11.client.selection;
 
+import com.yiming.wrutils1_21_11.client.net.ClientTestState;
 import com.yiming.wrutils1_21_11.command.SelectionManager;
+import com.yiming.wrutils1_21_11.net.SelectionUpdate;
 import com.yiming.wrutils1_21_11.test.WrtTestEngine;
+import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.fabricmc.fabric.api.event.player.AttackBlockCallback;
 import net.fabricmc.fabric.api.event.player.UseBlockCallback;
 import net.minecraft.entity.player.PlayerEntity;
@@ -31,9 +34,13 @@ import net.minecraft.world.World;
  * <p>返回 {@link ActionResult#FAIL} 而不是 SUCCESS：FAIL 才"取消且<b>不</b>发包给服务端"，
  * 也就不会在服务端再把这次交互放行一遍（右键给原木去皮就是这么漏出去的）。
  *
- * <p>直调 {@link SelectionManager} 依赖"单人集成服务器下客户端与服务端同 JVM"这一既有假设
- * （与客户端直读 {@link WrtTestEngine#isRunning()} 同源）。要支持多人时，只需把
- * {@link #setPos} 换成发 payload 或执行 {@code /wrutils sel ...}，其余一行不动。
+ * <p><b>选区为什么写两份</b>：{@link SelectionManager} 是进程内的静态单例，多人下客户端与服务端
+ * 各有一份。本地那份供 {@link SelectionRenderer} 即时画线框（等一个网络来回会有肉眼可见的延迟），
+ * 同时经 {@link SelectionUpdate} 上报服务端那份——{@code /wrutils test new} 读的是服务端的。
+ * 代价是两份理论上可能漂移（玩家若改敲 {@code /wrutils sel pos1}，线框不会跟着变），是刻意换来的手感。
+ *
+ * <p>"没在跑测试才接管"问的是 {@link ClientTestState} 那份**镜像**，不再直读
+ * {@link WrtTestEngine} 单例：多人下后者是另一个进程里的字段，答案恒为"没在跑"。
  */
 public final class SelectionTool {
     /** 选区功能总开关，由键位切换；HUD 显示它的状态。默认开——不开的话验过的行为就变了。 */
@@ -74,14 +81,20 @@ public final class SelectionTool {
         return world.isClient()
                 && enabled
                 && player.getStackInHand(hand).isOf(Items.FLINT)
-                && !WrtTestEngine.get().isRunning();
+                && !ClientTestState.isRunning();
     }
 
     private static void setPos(PlayerEntity player, boolean first, BlockPos pos) {
+        // 本地那份：供线框即时绘制
         if (first) {
             SelectionManager.get().setPos1(player.getUuid(), pos);
         } else {
             SelectionManager.get().setPos2(player.getUuid(), pos);
+        }
+        // 服务端那份：/wrutils test new 读的是它。服务器没装 WRT 时静默跳过——
+        // 本地线框照样画得出来，不是错误状态。
+        if (ClientPlayNetworking.canSend(SelectionUpdate.ID)) {
+            ClientPlayNetworking.send(new SelectionUpdate(first, pos));
         }
         // 选点会连点很多次，用动作栏而非聊天，免得刷屏
         player.sendMessage(Text.literal("[WRT] " + (first ? "pos1" : "pos2")

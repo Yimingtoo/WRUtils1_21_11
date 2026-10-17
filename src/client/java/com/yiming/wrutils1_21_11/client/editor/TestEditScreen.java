@@ -1,6 +1,6 @@
 package com.yiming.wrutils1_21_11.client.editor;
 
-import com.yiming.wrutils1_21_11.test.io.TestPaths;
+import com.yiming.wrutils1_21_11.client.net.ClientTestEditor;
 import com.yiming.wrutils1_21_11.test.model.PlaceStep;
 import com.yiming.wrutils1_21_11.test.model.SetupBlock;
 import com.yiming.wrutils1_21_11.test.model.Step;
@@ -15,9 +15,6 @@ import net.minecraft.client.input.KeyInput;
 import net.minecraft.text.Text;
 import net.minecraft.util.math.BlockPos;
 import org.lwjgl.glfw.GLFW;
-
-import java.io.IOException;
-import java.nio.file.Path;
 
 /**
  * 测试编辑器（Phase 5.3）：整窗编辑**一个**测试。
@@ -469,11 +466,6 @@ public class TestEditScreen extends Screen {
     private void save(boolean andRun) {
         error = null;
         status = null;
-        MinecraftClient client = MinecraftClient.getInstance();
-        if (client.getServer() == null) {
-            error = "编辑器仅支持单人存档";
-            return;
-        }
         String problem = validateAll();
         if (problem != null) {
             error = problem;
@@ -481,22 +473,28 @@ public class TestEditScreen extends Screen {
         }
         session.widenInputToFit();
         String id = session.id().trim();
-        Path target = TestPaths.testFile(client.getServer(), id);
-        try {
-            session.save(target);
-        } catch (IOException e) {
-            error = "写入失败: " + e;
-            return;
-        }
-        if (!andRun) {
-            status = "已保存 " + target.getFileName();
-            return;
-        }
-        if (client.getNetworkHandler() != null) {
-            client.getNetworkHandler().sendChatCommand("wrutils test run " + id);
-        }
-        // 必须先关屏：shouldPause() = true 会让世界暂停，run 永远推进不了
-        this.close();
+        // 落盘交给服务端：多人下客户端没有存档路径（见 TestEditorServer）。
+        // 注意保存是异步的——写失败时界面得留着并报错，不能像以前那样立刻当成功。
+        ClientTestEditor.writeTest(id, session.json(), response -> {
+            if (response.isError()) {
+                error = response.error();
+                return;
+            }
+            if (!andRun) {
+                status = "已保存 " + response.id() + ".json";
+                return;
+            }
+            MinecraftClient client = MinecraftClient.getInstance();
+            if (client.getNetworkHandler() != null) {
+                client.getNetworkHandler().sendChatCommand("wrutils test run " + id);
+            }
+            // 必须先关屏：shouldPause() = true 会让世界暂停，测试的 run 推进不了。
+            // 但这个 close() 只在"自己还是当前屏"时才做——保存改成异步之后，响应可能晚于
+            // 玩家按 ESC 到达，那时 close() 关掉的就是"别人的"屏了（同步保存时代不存在这个竞态）。
+            if (client.currentScreen == this) {
+                this.close();
+            }
+        });
     }
 
     /** 返回第一条问题；全通过返回 null。坏串一律不许落盘。 */

@@ -1,6 +1,6 @@
 package com.yiming.wrutils1_21_11.client.progress;
 
-import com.yiming.wrutils1_21_11.test.WrtTestEngine;
+import com.yiming.wrutils1_21_11.client.net.ClientTestState;
 import com.yiming.wrutils1_21_11.test.runner.TestProgress;
 import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
 import net.fabricmc.fabric.api.client.rendering.v1.hud.VanillaHudElements;
@@ -19,6 +19,9 @@ import net.minecraft.util.Identifier;
  *
  * <p>挂在原版聊天层之后（{@link VanillaHudElements#CHAT}）以继承"按 F1 隐藏 HUD"的渲染条件——
  * 与选区 HUD 同一个套路；用 {@code addFirst}/{@code addLast} 不继承该条件。
+ *
+ * <p>数据来自 {@link ClientTestState}（服务端每 tick 推送的镜像），不再直读 {@code WrtTestEngine}
+ * 单例——那个只在单人成立，多人下读到的恒为 null，HUD 就永远不出现。
  */
 public final class ProgressHud {
     private static final int MARGIN = 4;
@@ -35,7 +38,7 @@ public final class ProgressHud {
     }
 
     private static void render(DrawContext context, RenderTickCounter tickCounter) {
-        TestProgress progress = WrtTestEngine.get().progress();
+        TestProgress progress = ClientTestState.progress();
         if (progress == null) {
             return;
         }

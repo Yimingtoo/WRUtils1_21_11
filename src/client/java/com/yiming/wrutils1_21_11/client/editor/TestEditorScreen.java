@@ -1,9 +1,11 @@
 package com.yiming.wrutils1_21_11.client.editor;
 
+import com.yiming.wrutils1_21_11.client.net.ClientTestEditor;
+import com.yiming.wrutils1_21_11.command.SelectionManager;
 import com.yiming.wrutils1_21_11.test.io.TestDefinitionLoader;
-import com.yiming.wrutils1_21_11.test.io.TestPaths;
 import com.yiming.wrutils1_21_11.test.model.AssertStep;
 import com.yiming.wrutils1_21_11.test.model.PlaceStep;
+import com.yiming.wrutils1_21_11.test.model.Region;
 import com.yiming.wrutils1_21_11.test.model.SetupBlock;
 import com.yiming.wrutils1_21_11.test.model.Step;
 import com.yiming.wrutils1_21_11.test.model.TestDefinition;
@@ -16,12 +18,8 @@ import net.minecraft.client.gui.widget.ButtonWidget;
 import net.minecraft.text.Text;
 import net.minecraft.util.math.BlockPos;
 
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.stream.Stream;
 
 /**
  * 游戏内测试编辑器（Phase 5，当前为只读阶段）。
@@ -59,6 +57,10 @@ public class TestEditorScreen extends Screen {
     private int scroll;
     private TestDefinition current;
     private String error;
+    /** 有请求在途；驱动详情栏显示"加载中…"而不是误导性的"点击左侧选择一个测试"。 */
+    private boolean loading;
+    /** 每发起一次列表请求自增，回调据此丢弃过期响应（见 {@link #refresh()}）。 */
+    private int listGeneration;
     /** 焦点是在按钮回调之后才被 ParentElement 设置上去的，只能延后一帧清（见 {@link #tick()}）。 */
     private boolean clearFocusNextTick;
 
@@ -116,24 +118,39 @@ public class TestEditorScreen extends Screen {
 
     /** 把选中的测试读进工作副本，打开整窗编辑屏。 */
     private void editSelected() {
-        MinecraftClient client = MinecraftClient.getInstance();
-        if (selected < 0 || selected >= ids.size() || client.getServer() == null) {
+        if (selected < 0 || selected >= ids.size()) {
             return;
         }
-        Path file = TestPaths.testFile(client.getServer(), ids.get(selected));
-        try {
-            EditorSession.get().load(file, TestDefinitionLoader.load(file));
-        } catch (Exception e) {
-            error = e.getMessage() == null ? e.toString() : e.getMessage();
-            return;
-        }
-        client.setScreen(new TestEditScreen());
+        String id = ids.get(selected);
+        ClientTestEditor.readTest(id, response -> {
+            if (response.isError()) {
+                error = response.error();
+                return;
+            }
+            try {
+                EditorSession.get().load(TestDefinitionLoader.parse(response.json(), response.id()));
+            } catch (Exception e) {
+                error = e.getMessage() == null ? e.toString() : e.getMessage();
+                return;
+            }
+            // 只在自己还是当前屏时才跳转：读定义是异步的，响应可能晚于玩家按 ESC 到达，
+            // 那时 setScreen 会把编辑屏盖到人家正在看的界面上面。
+            MinecraftClient client = MinecraftClient.getInstance();
+            if (client.currentScreen == this) {
+                client.setScreen(new TestEditScreen());
+            }
+        });
     }
 
-    /** 新建一个空测试：id 取一个没被占用的默认名，进编辑屏后可改。 */
+    /**
+     * 新建一个空测试：id 取一个没被占用的默认名，进编辑屏后可改。
+     *
+     * <p>可写区优先取**燧石选中的范围**——两条新建入口（这里和 {@code /wrutils test new}）应当同义，
+     * 否则"圈好了范围、点新建却建在脚底下"很费解。没选过（或只选了一端）才退回玩家脚下那一格。
+     */
     private void createNew() {
         MinecraftClient client = MinecraftClient.getInstance();
-        if (client.getServer() == null || client.player == null) {
+        if (client.player == null) {
             return;
         }
         String id = "untitled";
@@ -141,7 +158,15 @@ public class TestEditorScreen extends Screen {
             id = "untitled" + i;
         }
         String dimension = client.player.getEntityWorld().getRegistryKey().getValue().toString();
-        EditorSession.get().reset(id, dimension, client.player.getBlockPos());
+        SelectionManager.Selection selection = SelectionManager.get().get(client.player.getUuid());
+        EditorSession session = EditorSession.get();
+        if (selection.isComplete()) {
+            // Region.of 会归一化两角，谁先谁后都行；origin 取 min 角，与 /wrutils test new 一致
+            Region region = Region.of(selection.pos1(), selection.pos2());
+            session.reset(id, dimension, region.min(), List.of(region));
+        } else {
+            session.reset(id, dimension, client.player.getBlockPos());
+        }
         client.setScreen(new TestEditScreen());
     }
 
@@ -175,46 +200,58 @@ public class TestEditorScreen extends Screen {
 
     private void refresh() {
         String keep = selected >= 0 && selected < ids.size() ? ids.get(selected) : null;
-        ids.clear();
+        current = null;
         error = null;
-        MinecraftClient client = MinecraftClient.getInstance();
-        if (client.getServer() == null) {
-            error = "编辑器仅支持单人存档";
-        } else {
-            Path dir = TestPaths.testsDir(client.getServer());
-            if (!Files.isDirectory(dir)) {
-                error = "没有测试目录: " + dir;
-            } else {
-                try (Stream<Path> stream = Files.list(dir)) {
-                    stream.map(path -> path.getFileName().toString())
-                            .filter(name -> name.endsWith(".json"))
-                            .map(name -> name.substring(0, name.length() - ".json".length()))
-                            .sorted()
-                            .forEach(ids::add);
-                } catch (IOException e) {
-                    error = "读取目录失败: " + e;
-                }
+        loading = true;
+        int generation = ++listGeneration;
+        // 关键：ids 只在回调里清空重建，不在这里就能避免刷新时列表闪空。
+        // 但因此必须挡住过期响应——连点"刷新"、或窗口 resize 触发 init()，都会有多条在途的 LIST，
+        // 旧的后到就会把列表追加成两份。
+        ClientTestEditor.listTests(response -> {
+            if (generation != listGeneration) {
+                return;
             }
-        }
-        selected = keep == null ? -1 : ids.indexOf(keep);
-        if (selected < 0 && initialSelection != null) {
-            selected = ids.indexOf(initialSelection);
-        }
-        loadSelected();
-        scrollToSelected();
+            loading = false;
+            if (response.isError()) {
+                error = response.error();
+                return;
+            }
+            ids.clear();
+            ids.addAll(response.ids());
+            selected = keep == null ? -1 : ids.indexOf(keep);
+            if (selected < 0 && initialSelection != null) {
+                selected = ids.indexOf(initialSelection);
+            }
+            scrollToSelected();
+            loadSelected();
+        });
     }
 
     private void loadSelected() {
         current = null;
-        MinecraftClient client = MinecraftClient.getInstance();
-        if (selected < 0 || selected >= ids.size() || client.getServer() == null) {
+        if (selected < 0 || selected >= ids.size()) {
             return;
         }
-        try {
-            current = TestDefinitionLoader.load(TestPaths.testFile(client.getServer(), ids.get(selected)));
-        } catch (Exception e) {
-            error = e.getMessage() == null ? e.toString() : e.getMessage();
-        }
+        String id = ids.get(selected);
+        error = null;
+        loading = true;
+        ClientTestEditor.readTest(id, response -> {
+            loading = false;
+            if (response.isError()) {
+                error = response.error();
+                return;
+            }
+            // 响应回来时选中项可能已经变了。连点两下会发出两条在途的 READ，回来顺序没有保证，
+            // 不挡的话会把 A 的定义画成 B 的。requestId 只保证"响应找得到自己的回调"，挡不住这个。
+            if (selected < 0 || selected >= ids.size() || !ids.get(selected).equals(response.id())) {
+                return;
+            }
+            try {
+                current = TestDefinitionLoader.parse(response.json(), response.id());
+            } catch (Exception e) {
+                error = e.getMessage() == null ? e.toString() : e.getMessage();
+            }
+        });
     }
 
     private void scrollToSelected() {
@@ -308,7 +345,7 @@ public class TestEditorScreen extends Screen {
     private void renderDetails(DrawContext context) {
         int y = listTop();
         if (current == null) {
-            String message = error != null ? error : "点击左侧选择一个测试";
+            String message = error != null ? error : (loading ? "加载中…" : "点击左侧选择一个测试");
             context.drawTextWithShadow(this.textRenderer, message, detailLeft(), y,
                     error != null ? COLOR_ERROR : COLOR_HINT);
             return;
