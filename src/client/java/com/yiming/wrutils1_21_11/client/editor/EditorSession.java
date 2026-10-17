@@ -9,22 +9,22 @@ import com.yiming.wrutils1_21_11.test.model.Step;
 import com.yiming.wrutils1_21_11.test.model.TestDefinition;
 import net.minecraft.util.math.BlockPos;
 
-import java.io.IOException;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
 /**
  * 编辑器的客户端工作副本。**内存里一律用绝对坐标**（与模型、引擎一致），
- * 只在 {@link #save} 时交给 {@link TestDefinitionWriter} 换算成相对 {@code origin} 的偏移。
+ * 只在 {@link #json()} 时交给 {@link TestDefinitionWriter} 换算成相对 {@code origin} 的偏移。
  *
  * <p>做成进程级单例：选点这类操作必须"关屏 → 看世界 → 回屏"，只有跨界面的状态才接得住。
+ *
+ * <p><b>这里不持有文件路径</b>：多人下客户端没有服务端存档的路径，存盘由服务端做
+ * （见 {@code TestEditorServer}）。客户端只负责把定义序列化成 JSON 发出去。
  */
 public final class EditorSession {
     private static final EditorSession INSTANCE = new EditorSession();
 
-    private Path file;
     private String id = "untitled";
     private String description = "";
     private String dimension = "minecraft:overworld";
@@ -42,9 +42,8 @@ public final class EditorSession {
         return INSTANCE;
     }
 
-    public void load(Path file, TestDefinition definition) {
+    public void load(TestDefinition definition) {
         cancelPick();
-        this.file = file;
         this.id = definition.id();
         this.description = definition.description();
         this.dimension = definition.dimension();
@@ -60,8 +59,16 @@ public final class EditorSession {
 
     /** 全新的空测试：可写区先设成 origin 那一格，随加的方块由 {@link #widenInputToFit()} 撑开。 */
     public void reset(String id, String dimension, BlockPos origin) {
-        load(null, new TestDefinition(id, "", dimension, origin, 200L,
-                new AreaSpec(List.of(Region.single(origin)), CleanupMode.CLEAR_INPUT, false, false, Map.of()),
+        reset(id, dimension, origin, List.of(Region.single(origin)));
+    }
+
+    /**
+     * 同上，但可写区由调用方给定——手持燧石选过范围时用它，免得"圈好了范围、新建却建在脚底下"。
+     * {@code origin} 应与 {@code inputs} 的 min 角一致（{@code /wrutils test new} 就是这么定的）。
+     */
+    public void reset(String id, String dimension, BlockPos origin, List<Region> inputs) {
+        load(new TestDefinition(id, "", dimension, origin, 200L,
+                new AreaSpec(inputs, CleanupMode.CLEAR_INPUT, false, false, Map.of()),
                 List.of(), List.of(), true));
     }
 
@@ -229,13 +236,9 @@ public final class EditorSession {
                 List.copyOf(setup), List.copyOf(steps), record);
     }
 
-    public void save(Path target) throws IOException {
-        TestDefinitionWriter.write(target, toDefinition());
-        this.file = target;
-    }
-
-    public Path file() {
-        return file;
+    /** 交给服务端落盘的线格式。与磁盘上的 JSON 完全同形（同一个 writer），所以服务端只需解析再写。 */
+    public String json() {
+        return TestDefinitionWriter.toJson(toDefinition());
     }
 
     public String id() {
