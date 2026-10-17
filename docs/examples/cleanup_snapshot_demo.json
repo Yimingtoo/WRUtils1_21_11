@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 3,
+  "id": "cleanup_snapshot_demo",
+  "description": "snapshot 清理：跑前手动放进可写区的箱子在测试改掉它之后被原样还原（含 NBT）",
+  "dimension": "minecraft:overworld",
+  "origin": [100, 63, 200],
+  "timeoutTicks": 40,
+  "record": false,
+  "area": {
+    "input": [
+      { "min": [0, 0, 0], "max": [1, 0, 0] }
+    ],
+    "cleanup": "snapshot",
+    "forceChunks": true,
+    "clearEntities": false,
+    "gameRules": { "random_tick_speed": 0, "spawn_mobs": false }
+  },
+  "setup": [
+    { "pos": [0, 0, 0], "block": "minecraft:stone" }
+  ],
+  "steps": [
+    { "action": "place", "tick": 2, "pos": [1, 0, 0], "block": "minecraft:stone" },
+    { "action": "assert", "tick": 2, "pos": [1, 0, 0], "expect": { "block": "minecraft:stone" } }
+  ]
+}

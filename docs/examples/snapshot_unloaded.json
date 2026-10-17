@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 3,
+  "id": "snapshot_unloaded",
+  "description": "snapshot + forceChunks=false：可写区区块未加载时应拒绝执行，而不是把空气拍进快照",
+  "dimension": "minecraft:overworld",
+  "origin": [2000, 64, 2000],
+  "timeoutTicks": 40,
+  "record": false,
+  "area": {
+    "input": [
+      { "min": [0, 0, 0], "max": [0, 0, 0] }
+    ],
+    "cleanup": "snapshot",
+    "forceChunks": false,
+    "clearEntities": false,
+    "gameRules": { "random_tick_speed": 0, "spawn_mobs": false }
+  },
+  "setup": [],
+  "steps": [
+    { "action": "place", "tick": 2, "pos": [0, 0, 0], "block": "minecraft:stone" },
+    { "action": "assert", "tick": 2, "pos": [0, 0, 0], "expect": { "block": "minecraft:stone" } }
+  ]
+}

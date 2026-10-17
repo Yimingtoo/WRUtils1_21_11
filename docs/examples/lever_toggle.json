@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 3,
+  "id": "lever_toggle",
+  "description": "拉杆: tick2 点击 -> tick3 断言 powered=true。非破坏性：只有 input 区可写",
+  "dimension": "minecraft:overworld",
+  "origin": [100, 63, 200],
+  "timeoutTicks": 40,
+  "record": false,
+  "area": {
+    "input": [
+      { "min": [0, 0, 0], "max": [0, 1, 0] }
+    ],
+    "cleanup": "clear_input",
+    "forceChunks": true,
+    "clearEntities": false,
+    "gameRules": { "random_tick_speed": 0, "spawn_mobs": false }
+  },
+  "setup": [
+    { "pos": [0, 0, 0], "block": "minecraft:stone" },
+    { "pos": [0, 1, 0], "block": "minecraft:lever[face=floor,facing=north,powered=false]" }
+  ],
+  "steps": [
+    { "action": "use", "tick": 2, "pos": [0, 1, 0], "side": "up", "hand": "main" },
+    { "action": "assert", "tick": 3, "pos": [0, 1, 0], "expect": { "block": "minecraft:lever[powered=true]" } }
+  ]
+}

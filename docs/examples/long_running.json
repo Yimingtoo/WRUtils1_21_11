@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 3,
+  "id": "long_running",
+  "description": "验证 gamerule 生命周期：运行中途退存档不泄漏",
+  "dimension": "minecraft:overworld",
+  "origin": [100, 63, 200],
+  "timeoutTicks": 700,
+  "record": false,
+  "area": {
+    "input": [
+      { "min": [0, 0, 0], "max": [0, 1, 0] }
+    ],
+    "cleanup": "clear_input",
+    "forceChunks": true,
+    "clearEntities": false,
+    "gameRules": { "random_tick_speed": 0, "spawn_mobs": false }
+  },
+  "setup": [
+    { "pos": [0, 0, 0], "block": "minecraft:stone" },
+    { "pos": [0, 1, 0], "block": "minecraft:lever[face=floor,facing=north,powered=false]" }
+  ],
+  "steps": [
+    { "action": "use", "tick": 2, "pos": [0, 1, 0], "side": "up", "hand": "main" },
+    { "action": "assert", "tick": 3, "pos": [0, 1, 0], "expect": { "block": "minecraft:lever[powered=true]" } },
+    { "action": "assert", "tick": 600, "pos": [0, 1, 0], "expect": { "block": "minecraft:lever[powered=true]" } }
+  ]
+}

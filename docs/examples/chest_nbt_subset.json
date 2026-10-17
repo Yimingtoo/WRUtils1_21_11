@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 3,
+  "id": "chest_nbt_subset",
+  "description": "箱子 NBT: setup 写入 5 个红石。tick1 先 subset（省略 count 也通过）再 exact（必须写全）",
+  "dimension": "minecraft:overworld",
+  "origin": [100, 64, 200],
+  "timeoutTicks": 40,
+  "record": false,
+  "area": {
+    "input": [
+      { "min": [0, 0, 0], "max": [0, 0, 0] }
+    ],
+    "cleanup": "clear_input",
+    "forceChunks": true,
+    "clearEntities": false,
+    "gameRules": { "random_tick_speed": 0, "spawn_mobs": false }
+  },
+  "setup": [
+    { "pos": [0, 0, 0],
+      "block": "minecraft:chest[facing=north]{Items:[{Slot:0b,id:\"minecraft:redstone\",count:5}]}" }
+  ],
+  "steps": [
+    { "action": "assert", "tick": 1, "pos": [0, 0, 0],
+      "expect": { "nbt": "{Items:[{Slot:0b,id:\"minecraft:redstone\"}]}", "nbtMatch": "subset" } },
+    { "action": "assert", "tick": 1, "pos": [0, 0, 0],
+      "expect": { "nbt": "{Items:[{Slot:0b,id:\"minecraft:redstone\",count:5}]}", "nbtMatch": "exact" } }
+  ]
+}

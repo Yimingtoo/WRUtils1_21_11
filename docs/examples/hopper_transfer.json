@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 3,
+  "id": "hopper_transfer",
+  "description": "漏斗传输: 漏斗里有 1 个红石，tick20 断言下方箱子已收到（验证漏斗会 tick + NBT 断言）",
+  "dimension": "minecraft:overworld",
+  "origin": [100, 64, 200],
+  "timeoutTicks": 60,
+  "record": false,
+  "area": {
+    "input": [
+      { "min": [0, 0, 0], "max": [0, 1, 0] }
+    ],
+    "cleanup": "clear_input",
+    "forceChunks": true,
+    "clearEntities": false,
+    "gameRules": { "random_tick_speed": 0, "spawn_mobs": false }
+  },
+  "setup": [
+    { "pos": [0, 0, 0], "block": "minecraft:chest[facing=north]" },
+    { "pos": [0, 1, 0],
+      "block": "minecraft:hopper[facing=down]{Items:[{Slot:0b,id:\"minecraft:redstone\",count:1}]}" }
+  ],
+  "steps": [
+    { "action": "assert", "tick": 20, "pos": [0, 0, 0],
+      "expect": { "nbt": "{Items:[{Slot:0b,id:\"minecraft:redstone\",count:1}]}", "nbtMatch": "subset" } }
+  ]
+}
