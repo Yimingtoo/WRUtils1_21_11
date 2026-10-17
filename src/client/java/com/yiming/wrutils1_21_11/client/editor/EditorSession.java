@@ -299,10 +299,6 @@ public final class EditorSession {
         return origin;
     }
 
-    public void setOrigin(BlockPos value) {
-        this.origin = value;
-    }
-
     public long timeoutTicks() {
         return timeoutTicks;
     }

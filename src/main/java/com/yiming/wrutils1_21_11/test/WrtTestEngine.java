@@ -39,9 +39,11 @@ public final class WrtTestEngine {
     private static final int CLEANUP_RETRIES = 5;
 
     private MinecraftServer server;
-    // volatile：单人集成服务器下客户端（渲染线程）会直接读它做编辑器互斥
+    // volatile：服务端命令线程与 tick 钩子共享。客户端已改为读 ClientTestState（S2C 同步），
+    // 不再直接读这个字段。
     private volatile TestRun currentRun;
-    // 同理给进度 HUD 读。服务端每 tick 重建整份快照，客户端只读这个引用，见 onEndWorldTick
+    // 服务端每 tick 重建整份快照，由 TestStatusServer 经 TestStatusUpdate 广播给客户端；
+    // 客户端读 ClientTestState 里的副本，不直接读这个引用。
     private volatile TestProgress progress;
 
     private RecordingConfig recordingConfig = RecordingConfig.load();
@@ -99,11 +101,22 @@ public final class WrtTestEngine {
         return progress;
     }
 
+    /** 公开写入口只允许在服务端线程调用；非服务端线程直接抛异常。 */
+    private void requireServerThread() {
+        if (server == null) {
+            throw new IllegalStateException("WRT 引擎尚未初始化");
+        }
+        if (!server.isOnThread()) {
+            throw new IllegalStateException("WRT 引擎只能在服务端线程调用");
+        }
+    }
+
     /**
      * {@code /wrutils test stop}：中止当前 run、清空批跑队列、停掉录制探测。
      * 返回是否真的停掉了什么。
      */
     public boolean stop() {
+        requireServerThread();
         boolean stopped = currentRun != null || probeSession != null || !pending.isEmpty();
         // 先清队列：否则当前 run 收尾后 onEndWorldTick 会自动开始下一个测试
         clearBatch();
@@ -122,6 +135,7 @@ public final class WrtTestEngine {
 
     /** 单跑一次。构造失败（如 gamerule 名字写错）直接抛给命令层显示可读错误。 */
     public boolean startRun(TestDefinition definition, ServerCommandSource feedback, ServerWorld world) {
+        requireServerThread();
         if (currentRun != null) {
             return false;
         }
@@ -133,6 +147,7 @@ public final class WrtTestEngine {
 
     /** 串行跑一批；队列在每次 run 结束后自动推进，全部完成后打印总表。 */
     public boolean startBatch(List<TestDefinition> definitions, ServerCommandSource feedback, ServerWorld world) {
+        requireServerThread();
         if (currentRun != null) {
             return false;
         }
@@ -218,12 +233,14 @@ public final class WrtTestEngine {
 
     /** 把"通过即删"的兜底清理排进队列：隔几 tick 再 glob 删除，防异步落盘竞态。 */
     public void scheduleRecordingCleanup(Path root, String label) {
+        requireServerThread();
         cleanups.add(new Cleanup(root, label, CLEANUP_RETRIES));
     }
 
     /** /wrutils recording test：在原地起一段短录制，PROBE_TICKS 后自动停止并保留。 */
     public boolean startRecordingProbe(ServerWorld world, BlockPos pos, int radiusChunks,
                                        ServerCommandSource feedback) {
+        requireServerThread();
         if (currentRun != null || probeSession != null || recordingBackend == NoopRecordingBackend.INSTANCE) {
             return false;
         }

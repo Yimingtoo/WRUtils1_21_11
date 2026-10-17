@@ -51,6 +51,15 @@ public final class ClientTestEditor {
         send(TestEditorRequest.write(nextId(), id, json), callback);
     }
 
+    public static void deleteTest(String id, Consumer<TestEditorResponse> callback) {
+        send(TestEditorRequest.delete(nextId(), id), callback);
+    }
+
+    /** 读取服务端权威的当前选区。 */
+    public static void selection(Consumer<TestEditorResponse> callback) {
+        send(TestEditorRequest.selection(nextId()), callback);
+    }
+
     private static int nextId() {
         return ++nextRequestId;
     }

@@ -27,19 +27,22 @@ import net.minecraft.world.rule.GameRules;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 测试开始前的一次性准备与结束时的还原。
  *
  * <p>**非破坏性**：方块层面只动 {@code spec.inputs}（可写区），机器本体与断言位置一律不碰。
- * 强制区块/清实体按"测试涉及范围"（{@code chunkRegion} = 可写区 ∪ 所有步骤坐标）计算。
+ * 强制区块/清实体按"测试涉及范围"（每个可写区与每个步骤坐标各自成区）计算——不取包围盒，
+ * 避免两片互不相邻的可写区之间的间隙被一并加载或清实体。
  */
 public final class WorldPrep {
     private final ServerWorld world;
     private final AreaSpec spec;
-    private final Region chunkRegion;
+    private final List<Region> chunkRegions;
     private final List<ChunkPos> forcedChunks = new ArrayList<>();
     private final Map<GameRule<?>, Object> savedRules = new LinkedHashMap<>();
     /** {@code snapshot} 模式：可写区内全部**非空气**方块；其余模式为 null。 */
@@ -53,10 +56,10 @@ public final class WorldPrep {
      */
     private static final long MAX_SNAPSHOT_VOLUME = 1_000_000L;
 
-    public WorldPrep(ServerWorld world, AreaSpec spec, Region chunkRegion) {
+    public WorldPrep(ServerWorld world, AreaSpec spec, List<Region> chunkRegions) {
         this.world = world;
         this.spec = spec;
-        this.chunkRegion = chunkRegion;
+        this.chunkRegions = List.copyOf(chunkRegions);
     }
 
     public void prepare() {
@@ -65,10 +68,13 @@ public final class WorldPrep {
             if (spec.cleanup() == CleanupMode.SNAPSHOT) {
                 checkSnapshotVolume();
             }
-            // 再强制加载：快照要读方块状态，未加载的区块读出来是空气，
-            // 不先加载就会把整片区域记成"本来什么都没有"。
+            // 快照要读方块状态，未加载的区块读出来是空气。开启 forceChunks 时先加载；
+            // 未开启时不主动加载（避免触发生成），而是要求相关区块已经加载，
+            // 否则直接拒绝执行——不能把"没读到"静默记成"本来什么都没有"。
             if (spec.forceChunks()) {
                 forceChunks();
+            } else if (spec.cleanup() == CleanupMode.SNAPSHOT) {
+                requireChunksLoaded();
             }
             applyCleanup();
             if (spec.clearEntities()) {
@@ -199,25 +205,67 @@ public final class WorldPrep {
     }
 
     private void forceChunks() {
-        int minCx = chunkRegion.min().getX() >> 4;
-        int maxCx = chunkRegion.max().getX() >> 4;
-        int minCz = chunkRegion.min().getZ() >> 4;
-        int maxCz = chunkRegion.max().getZ() >> 4;
-        for (int cx = minCx; cx <= maxCx; cx++) {
-            for (int cz = minCz; cz <= maxCz; cz++) {
-                if (world.setChunkForced(cx, cz, true)) {
-                    forcedChunks.add(new ChunkPos(cx, cz));
+        for (Region region : chunkRegions) {
+            for (ChunkPos chunk : chunksOf(region)) {
+                // 重叠区域会重复请求同一区块；setChunkForced 只在"本次新强制"时返回 true，
+                // 因此 forcedChunks 不会重复，restore 也不会误解锁别人强制加载的区块。
+                if (world.setChunkForced(chunk.x, chunk.z, true)) {
+                    forcedChunks.add(chunk);
                 }
             }
         }
     }
 
+    /**
+     * {@code cleanup=snapshot} 且未开启 {@code forceChunks} 时，要求测试涉及的区块已经加载。
+     * 不主动加载、不触发生成：未加载区块会被快照读成空气，宁可启动前拒绝。
+     */
+    private void requireChunksLoaded() {
+        Set<ChunkPos> missing = new LinkedHashSet<>();
+        for (Region region : chunkRegions) {
+            for (ChunkPos chunk : chunksOf(region)) {
+                if (!world.getChunkManager().isChunkLoaded(chunk.x, chunk.z)) {
+                    missing.add(chunk);
+                }
+            }
+        }
+        if (missing.isEmpty()) {
+            return;
+        }
+        StringBuilder list = new StringBuilder();
+        for (ChunkPos chunk : missing) {
+            if (list.length() > 0) {
+                list.append(", ");
+            }
+            list.append('(').append(chunk.x).append(',').append(chunk.z).append(')');
+        }
+        throw new IllegalStateException("cleanup=snapshot 要求测试涉及的区块已加载，但以下区块未加载: "
+                + list + "。请先靠近测试区域，或在 area 里设置 \"forceChunks\": true 让引擎加载。");
+    }
+
+    /** 区域覆盖的全部区块坐标（闭区间）。 */
+    private static List<ChunkPos> chunksOf(Region region) {
+        int minCx = region.min().getX() >> 4;
+        int maxCx = region.max().getX() >> 4;
+        int minCz = region.min().getZ() >> 4;
+        int maxCz = region.max().getZ() >> 4;
+        List<ChunkPos> chunks = new ArrayList<>();
+        for (int cx = minCx; cx <= maxCx; cx++) {
+            for (int cz = minCz; cz <= maxCz; cz++) {
+                chunks.add(new ChunkPos(cx, cz));
+            }
+        }
+        return chunks;
+    }
+
     private void clearEntities() {
-        Box box = new Box(
-                chunkRegion.min().getX(), chunkRegion.min().getY(), chunkRegion.min().getZ(),
-                chunkRegion.max().getX() + 1, chunkRegion.max().getY() + 1, chunkRegion.max().getZ() + 1);
-        discardEntitiesOfType(ItemEntity.class, box);
-        discardEntitiesOfType(ExperienceOrbEntity.class, box);
+        for (Region region : chunkRegions) {
+            Box box = new Box(
+                    region.min().getX(), region.min().getY(), region.min().getZ(),
+                    region.max().getX() + 1, region.max().getY() + 1, region.max().getZ() + 1);
+            discardEntitiesOfType(ItemEntity.class, box);
+            discardEntitiesOfType(ExperienceOrbEntity.class, box);
+        }
     }
 
     private <T extends Entity> void discardEntitiesOfType(Class<T> type, Box box) {

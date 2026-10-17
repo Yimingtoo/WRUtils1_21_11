@@ -29,7 +29,7 @@ import java.util.Map;
  * {@link TestDefinitionLoader} 的逆操作：模型 → JSON。
  * 与 loader 往返保真（load → save → load 对象相等）是本类的硬要求，见 {@code /wrutils test roundtrip}。
  *
- * <p>坐标语义：{@code origin} 恒为绝对值，其余坐标一律写成**相对 origin 的偏移**（{@link #SCHEMA_VERSION} = 2）。
+ * <p>坐标语义：{@code origin} 恒为绝对值，其余坐标一律写成**相对 origin 的偏移**（{@link #SCHEMA_VERSION} = 3）。
  * 省略字段只在"省略后 loader 会还原出一模一样的值"时才做——否则必须显式写出。
  */
 public final class TestDefinitionWriter {

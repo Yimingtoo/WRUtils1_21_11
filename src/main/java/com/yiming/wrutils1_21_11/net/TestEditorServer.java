@@ -10,13 +10,12 @@ import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.command.CommandManager;
 import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.util.math.BlockPos;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
-import java.util.regex.Pattern;
-import java.util.stream.Stream;
 
 /**
  * 服务端侧的接收器：编辑器的文件操作 + 燧石选区上报。
@@ -28,15 +27,13 @@ import java.util.stream.Stream;
  * <p><b>下面两条校验是"新增"的，不是"防御性编程"</b>：payload 的内容完全由客户端决定，而服务端
  * 此前从不校验任何客户端输入——因为此前根本没有客户端输入。
  * <ul>
- *   <li>{@link #requirePermission(String)} 挡权限：不挡的话任何玩家都能往服务端存档里写文件；</li>
+ *   <li>{@link #requirePermission(ServerPlayerEntity)} 挡权限：不挡的话任何玩家都能往服务端存档里写文件；</li>
  *   <li>{@link #requireValidId} 挡 id：{@code "../../server.properties"} 是个完全合法的字符串，
  *       它会顺着 {@code testsDir.resolve(id + ".json")} 逃出 tests 目录。</li>
  * </ul>
  */
 public final class TestEditorServer {
     /** 与客户端 {@code TestEditScreen.validateAll} 用的是同一条正则，别让两侧的合法集不一致。 */
-    private static final Pattern ID_PATTERN = Pattern.compile("[A-Za-z0-9_\\-]+");
-
     private TestEditorServer() {
     }
 
@@ -64,6 +61,8 @@ public final class TestEditorServer {
                 case LIST -> TestEditorResponse.ids(requestId, listTests(server));
                 case READ -> readDefinition(server, requestId, request.id());
                 case WRITE -> writeDefinition(server, player, requestId, request.id(), request.json());
+                case DELETE -> deleteDefinition(server, player, requestId, request.id());
+                case SELECTION -> TestEditorResponse.selection(requestId, encodeSelection(player));
             };
         } catch (Exception e) {
             String message = e.getMessage() == null ? e.toString() : e.getMessage();
@@ -81,26 +80,28 @@ public final class TestEditorServer {
         }
     }
 
+    /** 把服务端选区编码成 "x1 y1 z1 x2 y2 z2"；未选完整时返回空串。 */
+    private static String encodeSelection(ServerPlayerEntity player) {
+        SelectionManager.Selection selection = SelectionManager.get().get(player.getUuid());
+        if (!selection.isComplete()) {
+            return "";
+        }
+        BlockPos a = selection.pos1();
+        BlockPos b = selection.pos2();
+        return a.getX() + " " + a.getY() + " " + a.getZ() + " "
+                + b.getX() + " " + b.getY() + " " + b.getZ();
+    }
+
     /** id 会被直接拼进文件名，必须挡住 {@code ../} 这类逃逸。空 id 也一并挡掉。 */
     private static String requireValidId(String id) {
-        if (!ID_PATTERN.matcher(id).matches()) {
+        if (!TestPaths.isValidId(id)) {
             throw new IllegalArgumentException("非法的测试 id: \"" + id + "\"");
         }
         return id;
     }
 
     private static List<String> listTests(MinecraftServer server) throws IOException {
-        Path dir = TestPaths.testsDir(server);
-        if (!Files.isDirectory(dir)) {
-            return List.of();
-        }
-        try (Stream<Path> files = Files.list(dir)) {
-            return files.map(path -> path.getFileName().toString())
-                    .filter(name -> name.endsWith(".json"))
-                    .map(name -> name.substring(0, name.length() - ".json".length()))
-                    .sorted()
-                    .toList();
-        }
+        return TestPaths.listTestIds(server);
     }
 
     private static TestEditorResponse readDefinition(MinecraftServer server, int requestId, String rawId)
@@ -114,6 +115,18 @@ public final class TestEditorServer {
         // 走一遍 writer 再发：客户端拿到的永远是规范形状（相对坐标、省略可省的字段），
         // 它改完存回来才不会因为形状差异而变形。
         return TestEditorResponse.definition(requestId, id, TestDefinitionWriter.toJson(definition));
+    }
+
+    private static TestEditorResponse deleteDefinition(MinecraftServer server, ServerPlayerEntity player,
+                                                       int requestId, String rawId) throws IOException {
+        String id = requireValidId(rawId);
+        Path file = TestPaths.testFile(server, id);
+        if (!Files.isRegularFile(file)) {
+            throw new IOException("找不到测试定义: " + id);
+        }
+        Files.delete(file);
+        WrtLog.LOGGER.info("[WRT] {} 删除了测试 {}", player.getGameProfile().name(), id);
+        return TestEditorResponse.deleted(requestId, id);
     }
 
     private static TestEditorResponse writeDefinition(MinecraftServer server, ServerPlayerEntity player,

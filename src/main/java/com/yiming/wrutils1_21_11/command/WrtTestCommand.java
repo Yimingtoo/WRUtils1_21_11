@@ -3,6 +3,9 @@ package com.yiming.wrutils1_21_11.command;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
+import com.mojang.brigadier.suggestion.Suggestions;
+import com.mojang.brigadier.suggestion.SuggestionsBuilder;
+import com.yiming.wrutils1_21_11.WrtLog;
 import com.yiming.wrutils1_21_11.replay.RecordingBackend;
 import com.yiming.wrutils1_21_11.replay.RecordingConfig;
 import com.yiming.wrutils1_21_11.test.WrtTestEngine;
@@ -29,8 +32,11 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.stream.Stream;
 
 public final class WrtTestCommand {
@@ -49,6 +55,7 @@ public final class WrtTestCommand {
                                         .executes(context -> list(context, StringArgumentType.getString(context, "filter")))))
                         .then(CommandManager.literal("show")
                                 .then(CommandManager.argument("id", StringArgumentType.word())
+                                        .suggests(WrtTestCommand::suggestTestIds)
                                         .executes(WrtTestCommand::show)))
                         .then(CommandManager.literal("new")
                                 .then(CommandManager.argument("id", StringArgumentType.word())
@@ -58,6 +65,7 @@ public final class WrtTestCommand {
                                                         StringArgumentType.getString(context, "description"))))))
                         .then(CommandManager.literal("run")
                                 .then(CommandManager.argument("id", StringArgumentType.word())
+                                        .suggests(WrtTestCommand::suggestTestIds)
                                         .executes(context -> run(context, null))
                                         .then(CommandManager.literal("--record")
                                                 .executes(context -> run(context, true)))
@@ -70,14 +78,21 @@ public final class WrtTestCommand {
                                                 StringArgumentType.getString(context, "filter")))))
                         .then(CommandManager.literal("stop").executes(WrtTestCommand::stop))
                         .then(CommandManager.literal("reload").executes(WrtTestCommand::reload))
+                        .then(CommandManager.literal("delete")
+                                .then(CommandManager.argument("id", StringArgumentType.word())
+                                        .suggests(WrtTestCommand::suggestTestIds)
+                                        .executes(WrtTestCommand::delete)))
                         .then(CommandManager.literal("roundtrip")
                                 .executes(context -> roundtrip(context, null))
                                 .then(CommandManager.argument("id", StringArgumentType.word())
+                                        .suggests(WrtTestCommand::suggestTestIds)
                                         .executes(context -> roundtrip(context,
                                                 StringArgumentType.getString(context, "id"))))))
                 .then(CommandManager.literal("recording")
                         .then(CommandManager.literal("status").executes(WrtTestCommand::recordingStatus))
                         .then(CommandManager.literal("test").executes(WrtTestCommand::recordingTest)))
+                .then(CommandManager.literal("report")
+                        .then(CommandManager.literal("last").executes(WrtTestCommand::reportLast)))
                 .then(WrtSelectionCommand.node()));
     }
 
@@ -248,6 +263,75 @@ public final class WrtTestCommand {
             return 0;
         }
         source.sendFeedback(() -> Text.literal("[WRT] 已停止当前测试"), false);
+        return 1;
+    }
+
+    /** 显示最近一份报告（按修改时间取最新的 .txt）的路径与正文。 */
+    private static int reportLast(CommandContext<ServerCommandSource> context) {
+        ServerCommandSource source = context.getSource();
+        Path dir = TestPaths.reportsDir(source.getServer());
+        if (!Files.isDirectory(dir)) {
+            source.sendError(Text.literal("[WRT] 还没有报告目录: " + dir));
+            return 0;
+        }
+        try (Stream<Path> files = Files.list(dir)) {
+            Path latest = files
+                    .filter(path -> path.getFileName().toString().endsWith(".txt"))
+                    .max(Comparator.comparingLong((Path path) -> path.toFile().lastModified())
+                            .thenComparing(path -> path.getFileName().toString()))
+                    .orElse(null);
+            if (latest == null) {
+                source.sendError(Text.literal("[WRT] 还没有报告: " + dir));
+                return 0;
+            }
+            source.sendFeedback(() -> Text.literal("[WRT] 最近报告: " + latest), false);
+            for (String line : Files.readString(latest).split("\n")) {
+                source.sendFeedback(() -> Text.literal(line), false);
+            }
+            return 1;
+        } catch (IOException e) {
+            source.sendError(Text.literal("[WRT] 读取报告失败: " + e));
+            return 0;
+        }
+    }
+
+    /** 测试 id 的 Tab 补全：读 tests 目录，按已输入前缀过滤（大小写不敏感）。 */
+    private static CompletableFuture<Suggestions> suggestTestIds(CommandContext<ServerCommandSource> context,
+                                                                 SuggestionsBuilder builder) {
+        try {
+            String remaining = builder.getRemainingLowerCase();
+            for (String id : TestPaths.listTestIds(context.getSource().getServer())) {
+                if (id.toLowerCase(Locale.ROOT).startsWith(remaining)) {
+                    builder.suggest(id);
+                }
+            }
+        } catch (IOException e) {
+            // 补全失败不影响命令本身，静默返回已收集的建议
+        }
+        return builder.buildFuture();
+    }
+
+    /** 删除 tests 目录里的单个测试文件。 */
+    private static int delete(CommandContext<ServerCommandSource> context) {
+        ServerCommandSource source = context.getSource();
+        String id = StringArgumentType.getString(context, "id");
+        if (!TestPaths.isValidId(id)) {
+            source.sendError(Text.literal("[WRT] 非法的测试 id: \"" + id + "\""));
+            return 0;
+        }
+        Path file = TestPaths.testFile(source.getServer(), id);
+        if (!Files.isRegularFile(file)) {
+            source.sendError(Text.literal("[WRT] 找不到测试定义: " + id));
+            return 0;
+        }
+        try {
+            Files.delete(file);
+        } catch (IOException e) {
+            source.sendError(Text.literal("[WRT] 删除失败: " + e));
+            return 0;
+        }
+        WrtLog.LOGGER.info("[WRT] 删除了测试 {}", id);
+        source.sendFeedback(() -> Text.literal("[WRT] 已删除 " + id), false);
         return 1;
     }
 

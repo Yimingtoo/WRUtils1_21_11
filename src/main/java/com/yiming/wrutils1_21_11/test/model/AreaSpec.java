@@ -29,15 +29,6 @@ public record AreaSpec(
         inputs = List.copyOf(inputs);
     }
 
-    /** 所有可写区的包围盒；没有可写区时返回 {@code null}。强制区块/清实体用它。 */
-    public Region bounds() {
-        Region result = null;
-        for (Region region : inputs) {
-            result = result == null ? region : result.union(region);
-        }
-        return result;
-    }
-
     /** 坐标是否落在**任一**可写区内。 */
     public boolean allows(BlockPos pos) {
         for (Region region : inputs) {

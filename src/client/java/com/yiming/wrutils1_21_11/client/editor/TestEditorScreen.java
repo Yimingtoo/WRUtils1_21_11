@@ -13,6 +13,7 @@ import com.yiming.wrutils1_21_11.test.model.UseStep;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.Click;
 import net.minecraft.client.gui.DrawContext;
+import net.minecraft.client.gui.screen.ConfirmScreen;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.widget.ButtonWidget;
 import net.minecraft.text.Text;
@@ -22,7 +23,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 游戏内测试编辑器（Phase 5，当前为只读阶段）。
+ * 游戏内测试编辑器（Phase 5 起；Phase 6/7 已加入编辑、选区、清理模式等）。
  *
  * <p>左列是测试列表（可滚轮滚动），右列是选中测试的详情。列表**自绘 + 手动命中检测**，不用原版的
  * {@code EntryListWidget} 系：1.21.11 那套控件的抽象方法（{@code selectableChildren()} 等）改动频繁，
@@ -105,7 +106,7 @@ public class TestEditorScreen extends Screen {
     protected void init() {
         refresh();
         int gap = 4;
-        int count = 5;
+        int count = 6;
         int available = this.width - detailLeft() - gap * (count - 1) - 4;
         int buttonWidth = Math.max(28, available / count);
         int x = detailLeft();
@@ -114,6 +115,9 @@ public class TestEditorScreen extends Screen {
                 .dimensions(x, y, buttonWidth, 20).build());
         x += buttonWidth + gap;
         addDrawableChild(ButtonWidget.builder(Text.literal("编辑"), button -> editSelected())
+                .dimensions(x, y, buttonWidth, 20).build());
+        x += buttonWidth + gap;
+        addDrawableChild(ButtonWidget.builder(Text.literal("删除"), button -> deleteSelected())
                 .dimensions(x, y, buttonWidth, 20).build());
         x += buttonWidth + gap;
         addDrawableChild(ButtonWidget.builder(Text.literal("运行"), button -> runSelected())
@@ -154,6 +158,38 @@ public class TestEditorScreen extends Screen {
         });
     }
 
+    /** 删除选中的测试文件；先二次确认，删除请求走服务端（多人下客户端碰不到存档）。 */
+    private void deleteSelected() {
+        if (selected < 0 || selected >= ids.size()) {
+            return;
+        }
+        String id = ids.get(selected);
+        MinecraftClient client = MinecraftClient.getInstance();
+        client.setScreen(new ConfirmScreen(confirmed -> {
+            client.setScreen(this);
+            if (!confirmed) {
+                return;
+            }
+            ClientTestEditor.deleteTest(id, response -> {
+                if (client.currentScreen != this) {
+                    return;
+                }
+                if (response.isError()) {
+                    error = response.error();
+                    return;
+                }
+                if (id.equals(lastSelectedId)) {
+                    lastSelectedId = null;
+                }
+                selected = -1;
+                current = null;
+                refresh();
+            });
+        }, Text.literal("删除测试"),
+                Text.literal("确定删除 " + id + " 吗？这会删除存档里的 " + id + ".json，无法撤销。"),
+                Text.literal("删除"), Text.literal("取消")));
+    }
+
     /**
      * 新建一个空测试：id 取一个没被占用的默认名，进编辑屏后可改。
      *
@@ -165,16 +201,62 @@ public class TestEditorScreen extends Screen {
         if (client.player == null) {
             return;
         }
+        // 选区以服务端为准：多人下客户端本地那份可能没有 /wrutils sel 的结果。
+        // 请求失败或服务器没装 WRT 时退回本地选区，保持单人/旧服务器的行为。
+        if (ClientTestEditor.isAvailable()) {
+            ClientTestEditor.selection(response -> {
+                // 请求是异步的：用户可能已经关掉界面，别把他又拉回来。
+                if (!(client.currentScreen instanceof TestEditorScreen)) {
+                    return;
+                }
+                BlockPos[] corners = response.isError() ? localSelection(client) : parseSelection(response.json());
+                openNew(client, corners);
+            });
+            return;
+        }
+        openNew(client, localSelection(client));
+    }
+
+    /** 服务端返回 "x1 y1 z1 x2 y2 z2"；空串或坏串视为未选区。 */
+    private static BlockPos[] parseSelection(String encoded) {
+        if (encoded == null || encoded.isBlank()) {
+            return null;
+        }
+        String[] parts = encoded.trim().split("\\s+");
+        if (parts.length != 6) {
+            return null;
+        }
+        try {
+            return new BlockPos[]{
+                    new BlockPos(Integer.parseInt(parts[0]), Integer.parseInt(parts[1]), Integer.parseInt(parts[2])),
+                    new BlockPos(Integer.parseInt(parts[3]), Integer.parseInt(parts[4]), Integer.parseInt(parts[5]))
+            };
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private static BlockPos[] localSelection(MinecraftClient client) {
+        if (client.player == null) {
+            return null;
+        }
+        SelectionManager.Selection selection = SelectionManager.get().get(client.player.getUuid());
+        return selection.isComplete() ? new BlockPos[]{selection.pos1(), selection.pos2()} : null;
+    }
+
+    private void openNew(MinecraftClient client, BlockPos[] corners) {
+        if (client.player == null) {
+            return;
+        }
         String id = "untitled";
         for (int i = 2; ids.contains(id); i++) {
             id = "untitled" + i;
         }
         String dimension = client.player.getEntityWorld().getRegistryKey().getValue().toString();
-        SelectionManager.Selection selection = SelectionManager.get().get(client.player.getUuid());
         EditorSession session = EditorSession.get();
-        if (selection.isComplete()) {
+        if (corners != null) {
             // Region.of 会归一化两角，谁先谁后都行；origin 取 min 角，与 /wrutils test new 一致
-            Region region = Region.of(selection.pos1(), selection.pos2());
+            Region region = Region.of(corners[0], corners[1]);
             session.reset(id, dimension, region.min(), List.of(region));
         } else {
             session.reset(id, dimension, client.player.getBlockPos());
