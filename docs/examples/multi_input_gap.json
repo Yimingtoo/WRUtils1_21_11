@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 3,
+  "id": "multi_input_gap",
+  "description": "两片不相邻可写区：间隙不应被强制加载或清实体",
+  "dimension": "minecraft:overworld",
+  "origin": [100, 63, 200],
+  "timeoutTicks": 240,
+  "record": false,
+  "area": {
+    "input": [
+      { "min": [0, 0, 0], "max": [0, 0, 0] },
+      { "min": [40, 0, 0], "max": [40, 0, 0] }
+    ],
+    "cleanup": "none",
+    "forceChunks": true,
+    "clearEntities": true,
+    "gameRules": { "random_tick_speed": 0, "spawn_mobs": false }
+  },
+  "setup": [],
+  "steps": [
+    { "action": "place", "tick": 200, "pos": [0, 0, 0], "block": "minecraft:stone" },
+    { "action": "place", "tick": 200, "pos": [40, 0, 0], "block": "minecraft:stone" },
+    { "action": "assert", "tick": 201, "pos": [0, 0, 0], "expect": { "block": "minecraft:stone" } },
+    { "action": "assert", "tick": 201, "pos": [40, 0, 0], "expect": { "block": "minecraft:stone" } }
+  ]
+}

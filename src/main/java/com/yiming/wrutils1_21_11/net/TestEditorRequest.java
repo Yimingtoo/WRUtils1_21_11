@@ -7,11 +7,11 @@ import net.minecraft.network.packet.CustomPayload;
 import net.minecraft.util.Identifier;
 
 /**
- * 客户端 → 服务端：测试编辑器的一次文件操作。
+ * 客户端 → 服务端：测试编辑器的一次服务端操作。
  *
- * <p>三种操作合成一个包而不是拆成三个类型，是因为它们在服务端**共用同一段校验**——权限与 id
- * 白名单。拆开就得把那两段抄三遍，而漏抄任何一遍都是安全漏洞。服务端一个 {@code switch(op)}
- * 把校验写在前面，漏不掉。
+ * <p>这些操作合成一个包而不是各自拆成类型，是因为它们在服务端**共用同一段权限校验**，
+ * 文件操作还共用 id 白名单。拆开就得把校验抄多遍，而漏抄任何一遍都是安全漏洞。
+ * 服务端一个 {@code switch(op)} 把校验写在前面，漏不掉。
  *
  * <p>{@code id} / {@code json} 缺省时填空串，**不传 null**——{@link PacketCodecs#STRING} 遇到 null 会 NPE。
  *
@@ -47,6 +47,16 @@ public record TestEditorRequest(int requestId, TestEditorOp op, String id, Strin
     /** 写单个定义。 */
     public static TestEditorRequest write(int requestId, String id, String json) {
         return new TestEditorRequest(requestId, TestEditorOp.WRITE, id, json);
+    }
+
+    /** 删除单个定义。 */
+    public static TestEditorRequest delete(int requestId, String id) {
+        return new TestEditorRequest(requestId, TestEditorOp.DELETE, id, "");
+    }
+
+    /** 读取服务端当前选区。 */
+    public static TestEditorRequest selection(int requestId) {
+        return new TestEditorRequest(requestId, TestEditorOp.SELECTION, "", "");
     }
 
     @Override

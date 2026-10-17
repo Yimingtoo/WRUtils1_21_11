@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 3,
+  "id": "comparator_mode_toggle",
+  "description": "比较器: 右键在 compare/subtract 间切换（验证 use 对比较器生效）",
+  "dimension": "minecraft:overworld",
+  "origin": [100, 63, 200],
+  "timeoutTicks": 40,
+  "record": false,
+  "area": {
+    "input": [
+      { "min": [0, 0, 0], "max": [0, 1, 0] }
+    ],
+    "cleanup": "clear_input",
+    "forceChunks": true,
+    "clearEntities": false,
+    "gameRules": { "random_tick_speed": 0, "spawn_mobs": false }
+  },
+  "setup": [
+    { "pos": [0, 0, 0], "block": "minecraft:stone" },
+    { "pos": [0, 1, 0], "block": "minecraft:comparator[facing=north,mode=compare]" }
+  ],
+  "steps": [
+    { "action": "use", "tick": 2, "pos": [0, 1, 0], "side": "up", "hand": "main" },
+    { "action": "assert", "tick": 3, "pos": [0, 1, 0],
+      "expect": { "block": "minecraft:comparator[facing=north,mode=subtract]" } },
+    { "action": "use", "tick": 6, "pos": [0, 1, 0], "side": "up", "hand": "main" },
+    { "action": "assert", "tick": 7, "pos": [0, 1, 0],
+      "expect": { "block": "minecraft:comparator[facing=north,mode=compare]" } }
+  ]
+}

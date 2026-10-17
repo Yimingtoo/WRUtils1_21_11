@@ -49,11 +49,6 @@ public final class BlockStringValidator {
         }
     }
 
-    /** 校验 "x y z" 形式的坐标串。 */
-    public static String validatePos(String text) {
-        return parsePos(text) == null ? "不是 \"x y z\" 形式的整数坐标" : null;
-    }
-
     /** 解析 "x y z"；解析失败返回 null。 */
     public static Integer[] parsePos(String text) {
         if (text == null) {

@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 3,
+  "id": "repeater_delay_toggle",
+  "description": "中继器: 右键循环延迟 1->2->3（验证 use 对中继器生效 + blockstate 断言）",
+  "dimension": "minecraft:overworld",
+  "origin": [100, 63, 200],
+  "timeoutTicks": 40,
+  "record": false,
+  "area": {
+    "input": [
+      { "min": [0, 0, 0], "max": [0, 1, 0] }
+    ],
+    "cleanup": "clear_input",
+    "forceChunks": true,
+    "clearEntities": false,
+    "gameRules": { "random_tick_speed": 0, "spawn_mobs": false }
+  },
+  "setup": [
+    { "pos": [0, 0, 0], "block": "minecraft:stone" },
+    { "pos": [0, 1, 0], "block": "minecraft:repeater[facing=north,delay=1]" }
+  ],
+  "steps": [
+    { "action": "assert", "tick": 1, "pos": [0, 1, 0],
+      "expect": { "block": "minecraft:repeater[facing=north,delay=1]" } },
+    { "action": "use", "tick": 2, "pos": [0, 1, 0], "side": "up", "hand": "main" },
+    { "action": "assert", "tick": 3, "pos": [0, 1, 0],
+      "expect": { "block": "minecraft:repeater[facing=north,delay=2]" } },
+    { "action": "use", "tick": 6, "pos": [0, 1, 0], "side": "up", "hand": "main" },
+    { "action": "assert", "tick": 7, "pos": [0, 1, 0],
+      "expect": { "block": "minecraft:repeater[facing=north,delay=3]" } }
+  ]
+}

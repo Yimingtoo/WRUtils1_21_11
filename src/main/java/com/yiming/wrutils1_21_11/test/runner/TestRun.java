@@ -50,7 +50,8 @@ public final class TestRun {
     private final PlayerEntity player;
     private final TestScheduler scheduler;
     private final WorldPrep prep;
-    private final Region chunkRegion;
+    /** 全部范围的包围盒，仅用于录制（录制目标必须是单个方形区域）。 */
+    private final Region chunkBounds;
     private final RecordingConfig recordingConfig;
     private final List<Failure> failures = new ArrayList<>();
     /** 窗口断言（{@code withinTicks > 0}）正在等待的条目，每 tick 采样一次。 */
@@ -72,13 +73,20 @@ public final class TestRun {
         this.definition = definition;
         this.feedback = feedback;
         this.recordingConfig = recordingConfig;
+        // 坐标是绝对的，在错误维度执行会静默跑错位置——宁可启动前直接拒绝。
+        String actualDimension = world.getRegistryKey().getValue().toString();
+        if (!actualDimension.equals(definition.dimension())) {
+            throw new IllegalArgumentException("维度不匹配：定义是 " + definition.dimension()
+                    + "，当前世界是 " + actualDimension + "。请到对应维度再运行");
+        }
         List<Step> steps = flatten(definition);
         // 先校验再碰世界：越界的 place/use 立即失败，避免改了一半才发现
         validateWritable(definition, steps);
         this.scheduler = new TestScheduler(steps);
         AreaSpec area = definition.area();
-        this.chunkRegion = chunkRegion(definition, steps);
-        this.prep = area == null ? null : new WorldPrep(world, area, chunkRegion);
+        List<Region> chunkRegions = chunkRegions(definition, steps);
+        this.chunkBounds = boundsOf(chunkRegions);
+        this.prep = area == null ? null : new WorldPrep(world, area, chunkRegions);
         this.player = FakePlayer.get(world, new GameProfile(FakePlayer.DEFAULT_UUID, "[WRT] tester"));
         if (prep != null) {
             prep.prepare();
@@ -114,18 +122,32 @@ public final class TestRun {
         }
     }
 
-    /** 强制区块/清实体的范围：可写区包围盒 ∪ 全部步骤坐标（含 assert，机器要 tick 才读得准）。 */
-    private static Region chunkRegion(TestDefinition definition, List<Step> steps) {
+    /**
+     * 强制区块/清实体的范围：每个可写区、每个步骤坐标（含 assert，机器要 tick 才读得准）各自成区。
+     * 不能取并集包围盒——两片互不相邻的可写区之间的间隙不应被强制加载或清实体。
+     */
+    private static List<Region> chunkRegions(TestDefinition definition, List<Step> steps) {
         AreaSpec area = definition.area();
-        Region region = area != null ? area.bounds() : null;
+        List<Region> regions = new ArrayList<>();
+        if (area != null) {
+            regions.addAll(area.inputs());
+        }
         for (Step step : steps) {
             BlockPos pos = anyPos(step);
-            if (pos == null) {
-                continue;
+            if (pos != null) {
+                regions.add(Region.single(pos));
             }
-            region = region == null ? Region.single(pos) : region.union(Region.single(pos));
         }
-        return region == null ? Region.single(definition.origin()) : region;
+        return regions.isEmpty() ? List.of(Region.single(definition.origin())) : List.copyOf(regions);
+    }
+
+    /** 录制目标必须是一个方形区域，只能取全部范围的包围盒。 */
+    private static Region boundsOf(List<Region> regions) {
+        Region result = null;
+        for (Region region : regions) {
+            result = result == null ? region : result.union(region);
+        }
+        return result;
     }
 
     private static BlockPos writablePos(Step step) {
@@ -231,12 +253,13 @@ public final class TestRun {
             for (TestScheduler.Scheduled scheduled : scheduler.due(relativeTick)) {
                 execute(scheduled, relativeTick);
             }
+            // 窗口断言也属于本 tick 的执行；异常同样要按 ABORTED 收尾，不能冒泡出 END_WORLD_TICK。
+            checkPendingAsserts();
         } catch (RuntimeException e) {
             WrtLog.LOGGER.error("[WRT] {} crashed at tick {}", definition.id(), relativeTick, e);
             finish(RunState.ABORTED);
             return;
         }
-        checkPendingAsserts();
         // 窗口断言没结束时不算跑完：最后一步之后可能还有人在等自己的窗口
         if (scheduler.isFinished() && pendingAsserts.isEmpty()) {
             if (trailTicks > 0) {
@@ -290,12 +313,14 @@ public final class TestRun {
             BlockInteractor.use(player, world, use.pos(), use.side(), use.hand());
         } else if (step instanceof AssertStep assertStep) {
             asserts++;
+            // 报告里的 step# 只数用户可见的 steps 列表；setup 是隐式前置，不占编号。
+            int stepIndex = scheduled.index() - definition.setup().size();
             if (assertStep.withinTicks() <= 0) {
                 failures.addAll(AssertionEngine.check(assertStep.expect(), world, assertStep.pos(), relativeTick,
-                        scheduled.index()));
+                        stepIndex));
             } else {
                 // 不在这里立即采样：挂到本 tick 末尾统一处理，保证同一 tick 的 place/use 一定排在采样之前。
-                pendingAsserts.add(new PendingAssert(scheduled.index(), assertStep.pos(), assertStep.expect(),
+                pendingAsserts.add(new PendingAssert(stepIndex, assertStep.pos(), assertStep.expect(),
                         relativeTick, relativeTick + assertStep.withinTicks()));
             }
         }
@@ -376,12 +401,12 @@ public final class TestRun {
         return backend.start(world.getServer(), target);
     }
 
-    /** 录制范围：覆盖 chunkRegion 的最小方形区块区，再按配置外扩。 */
+    /** 录制范围：覆盖全部测试范围的最小方形区块区，再按配置外扩。 */
     private RecordingTarget recordingTarget(String label) {
-        int minCx = chunkRegion.min().getX() >> 4;
-        int maxCx = chunkRegion.max().getX() >> 4;
-        int minCz = chunkRegion.min().getZ() >> 4;
-        int maxCz = chunkRegion.max().getZ() >> 4;
+        int minCx = chunkBounds.min().getX() >> 4;
+        int maxCx = chunkBounds.max().getX() >> 4;
+        int minCz = chunkBounds.min().getZ() >> 4;
+        int maxCz = chunkBounds.max().getZ() >> 4;
         int centerCx = (minCx + maxCx) / 2;
         int centerCz = (minCz + maxCz) / 2;
         int span = Math.max(Math.max(centerCx - minCx, maxCx - centerCx),

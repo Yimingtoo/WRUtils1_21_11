@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 3,
+  "id": "observer_pulse",
+  "description": "侦测器 1 tick 脉冲：用 withinTicks 窗口断言捕获红石粉瞬间 15",
+  "dimension": "minecraft:overworld",
+  "origin": [100, 63, 200],
+  "timeoutTicks": 60,
+  "record": true,
+  "area": {
+    "input": [
+      { "min": [0, 0, 0], "max": [2, 1, 0] }
+    ],
+    "cleanup": "clear_input",
+    "forceChunks": true,
+    "clearEntities": false,
+    "gameRules": { "random_tick_speed": 0, "spawn_mobs": false }
+  },
+  "setup": [
+    { "pos": [0, 0, 0], "block": "minecraft:stone" },
+    { "pos": [0, 1, 0], "block": "minecraft:lever[face=floor,facing=north,powered=false]" },
+    { "pos": [1, 1, 0], "block": "minecraft:observer[facing=west,powered=false]" },
+    { "pos": [2, 0, 0], "block": "minecraft:stone" },
+    { "pos": [2, 1, 0], "block": "minecraft:redstone_wire" }
+  ],
+  "steps": [
+    { "action": "use", "tick": 2, "pos": [0, 1, 0], "side": "up", "hand": "main" },
+    { "action": "assert", "tick": 2, "pos": [2, 1, 0], "withinTicks": 3,
+      "expect": { "redstone": { "mode": "received", "min": 15, "max": 15 } } },
+    { "action": "use", "tick": 6, "pos": [0, 1, 0], "side": "up", "hand": "main" },
+    { "action": "assert", "tick": 10, "pos": [2, 1, 0],
+      "expect": { "redstone": { "mode": "received", "min": 0, "max": 0 } } }
+  ]
+}

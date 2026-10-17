@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 3,
+  "id": "input_boundary_violation",
+  "description": "故意越界：place 写到可写区之外，启动时应被拒绝并给出可读错误（验证非破坏性守卫）",
+  "dimension": "minecraft:overworld",
+  "origin": [100, 64, 200],
+  "timeoutTicks": 40,
+  "area": {
+    "input": [
+      { "min": [0, 0, 0], "max": [0, 0, 0] }
+    ],
+    "cleanup": "clear_input",
+    "forceChunks": false,
+    "clearEntities": false,
+    "gameRules": {}
+  },
+  "setup": [
+    { "pos": [0, 0, 0], "block": "minecraft:stone" },
+    { "pos": [5, 0, 0], "block": "minecraft:gold_block" }
+  ],
+  "steps": []
+}

@@ -188,10 +188,6 @@ public class TestAreaScreen extends Screen {
         return values[(current.ordinal() + 1) % values.length];
     }
 
-    private TextFieldWidget add(TextFieldWidget field) {
-        return addDrawableChild(field);
-    }
-
     private void syncForm() {
         suppress = true;
         boolean has = selected >= 0 && selected < regions().size();

@@ -48,6 +48,15 @@ public record TestEditorResponse(int requestId, TestEditorOp op,
         return new TestEditorResponse(requestId, TestEditorOp.WRITE, List.of(), id, "", "");
     }
 
+    public static TestEditorResponse deleted(int requestId, String id) {
+        return new TestEditorResponse(requestId, TestEditorOp.DELETE, List.of(), id, "", "");
+    }
+
+    /** SELECTION 响应：{@code json} 携带 "x1 y1 z1 x2 y2 z2"，空串表示未选完整。 */
+    public static TestEditorResponse selection(int requestId, String encoded) {
+        return new TestEditorResponse(requestId, TestEditorOp.SELECTION, List.of(), "", encoded, "");
+    }
+
     public static TestEditorResponse failed(int requestId, TestEditorOp op, String error) {
         return new TestEditorResponse(requestId, op, List.of(), "", "", error);
     }
