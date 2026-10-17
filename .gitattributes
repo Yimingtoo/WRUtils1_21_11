@@ -1,2 +1,6 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Windows 批处理必须是 CRLF：LF-only 的 .bat 在 cmd.exe 里解析可能出错
+# （尤其含 ( ) 块或 goto 标签时）。显式钉死，不依赖检出机器的 core.eol。
+*.bat text eol=crlf

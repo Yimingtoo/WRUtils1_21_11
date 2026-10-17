@@ -39,6 +39,11 @@ public final class TestScheduler {
         return cursor >= ordered.size();
     }
 
+    /** 步骤总数，供进度 HUD 显示 "第几步 / 共几步"。 */
+    public int total() {
+        return ordered.size();
+    }
+
     private static int phaseOf(Step step) {
         if (step instanceof PlaceStep) {
             return 0;

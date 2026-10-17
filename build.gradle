@@ -13,6 +13,21 @@ base {
 loom {
     splitEnvironmentSourceSets()
 
+    runs {
+        // runServer 与 runClient 默认共用同一个 runDir（run/）：两个进程会抢
+        // session.lock / options.txt / world / saves，既不能同时跑，先后跑也会互相污染。
+        // 给开发服务器单独一个目录，两者才能并存。
+        server {
+            runDir "run-server"
+        }
+        client {
+            // dev 客户端默认不带用户名，每次启动随机生成一个（Player### 之类），
+            // 结果就是每次连服务器都是个"新玩家"。固定下来，UUID 也才跟着稳定
+            // （服务器 online-mode=false，UUID 由离线名字推导）。
+            programArgs "--username", "player001"
+        }
+    }
+
     mods {
         "wrutils1_21_11" {
             sourceSet sourceSets.main

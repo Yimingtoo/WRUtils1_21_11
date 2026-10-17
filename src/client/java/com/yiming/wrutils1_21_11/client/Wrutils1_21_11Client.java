@@ -4,6 +4,7 @@ import com.yiming.wrutils1_21_11.client.editor.EditorSession;
 import com.yiming.wrutils1_21_11.client.editor.TestAreaScreen;
 import com.yiming.wrutils1_21_11.client.editor.TestEditScreen;
 import com.yiming.wrutils1_21_11.client.editor.TestEditorScreen;
+import com.yiming.wrutils1_21_11.client.progress.ProgressHud;
 import com.yiming.wrutils1_21_11.client.selection.SelectionHud;
 import com.yiming.wrutils1_21_11.client.selection.SelectionRenderer;
 import com.yiming.wrutils1_21_11.client.selection.SelectionTool;
@@ -32,6 +33,8 @@ public class Wrutils1_21_11Client implements ClientModInitializer {
         SelectionTool.register();
         SelectionRenderer.register();
         SelectionHud.register();
+        // 测试进度：左上角显示正在跑的测试跑到哪了
+        ProgressHud.register();
 
         KeyBinding toggleKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
                 "key.wrutils1_21_11.toggle_item_entity_id",

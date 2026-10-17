@@ -14,6 +14,7 @@ import com.yiming.wrutils1_21_11.test.model.TestDefinition;
 import com.yiming.wrutils1_21_11.test.report.ReportWriter;
 import com.yiming.wrutils1_21_11.test.report.TestResult;
 import com.yiming.wrutils1_21_11.test.runner.RunState;
+import com.yiming.wrutils1_21_11.test.runner.TestProgress;
 import com.yiming.wrutils1_21_11.test.runner.TestRun;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
@@ -40,6 +41,8 @@ public final class WrtTestEngine {
     private MinecraftServer server;
     // volatile：单人集成服务器下客户端（渲染线程）会直接读它做编辑器互斥
     private volatile TestRun currentRun;
+    // 同理给进度 HUD 读。服务端每 tick 重建整份快照，客户端只读这个引用，见 onEndWorldTick
+    private volatile TestProgress progress;
 
     private RecordingConfig recordingConfig = RecordingConfig.load();
     private RecordingBackend recordingBackend = NoopRecordingBackend.INSTANCE;
@@ -89,6 +92,11 @@ public final class WrtTestEngine {
     /** 编辑器互斥用：单跑 / 批跑 / 录制探测任一在进行即为真。单人下客户端直接读。 */
     public boolean isRunning() {
         return currentRun != null || !pending.isEmpty() || probeSession != null;
+    }
+
+    /** 进度 HUD 用：正在跑的测试的进度快照，没在跑时为 null。单人下客户端直接读。 */
+    public TestProgress progress() {
+        return progress;
     }
 
     /**
@@ -290,15 +298,22 @@ public final class WrtTestEngine {
     private void onEndWorldTick(ServerWorld world) {
         tickCleanups();
         tickProbe(world);
-        if (currentRun == null || currentRun.world() != world) {
+        if (currentRun == null) {
+            progress = null;
+            return;
+        }
+        if (currentRun.world() != world) {
+            // 别的维度 tick 时不动进度：测试只跑在自己那个维度里，快照留到它自己的 tick 再更新
             return;
         }
         currentRun.tick();
         if (currentRun.state() == RunState.RUNNING) {
+            progress = currentRun.progress(pending.size());
             return;
         }
         TestResult result = currentRun.result();
         currentRun = null;
+        progress = null;
         if (batchFeedback != null) {
             batch.add(result);
             startNext();

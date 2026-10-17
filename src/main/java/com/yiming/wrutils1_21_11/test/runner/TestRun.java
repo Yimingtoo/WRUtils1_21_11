@@ -196,6 +196,13 @@ public final class TestRun {
         return world.getRegistryKey().getValue().toString();
     }
 
+    /** 给进度 HUD 的只读快照；由服务端线程（引擎的 tick 钩子）调用。 */
+    public TestProgress progress(int queued) {
+        // relativeTick 从 -1 起步，第一 tick 前显示 0 比显示 -1 合理
+        return new TestProgress(definition.id(), executed, scheduler.total(), asserts,
+                failures.size(), Math.max(0L, relativeTick), definition.timeoutTicks(), queued);
+    }
+
     public void tick() {
         if (state != RunState.RUNNING) {
             return;
