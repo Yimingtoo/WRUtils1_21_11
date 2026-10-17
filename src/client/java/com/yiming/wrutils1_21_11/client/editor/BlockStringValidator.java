@@ -1,9 +1,9 @@
 package com.yiming.wrutils1_21_11.client.editor;
 
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
+import com.yiming.wrutils1_21_11.test.BlockStringParser;
 import net.minecraft.block.Block;
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.command.argument.BlockArgumentParser;
 import net.minecraft.registry.RegistryKeys;
 import net.minecraft.registry.RegistryWrapper;
 
@@ -26,7 +26,8 @@ public final class BlockStringValidator {
         }
         try {
             // allowNbt=true：方块串可以带 {…}（示例里的箱子 / 漏斗就带）
-            BlockArgumentParser.block(blocks, text, true);
+            // 走统一入口：它会额外拒绝尾部残留（"minecraft:stone撒地方" 不能通过）
+            BlockStringParser.parse(blocks, text, true);
             return null;
         } catch (CommandSyntaxException e) {
             return e.getMessage();

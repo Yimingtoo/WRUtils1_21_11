@@ -3,11 +3,13 @@ package com.yiming.wrutils1_21_11.test.runner;
 import com.mojang.authlib.GameProfile;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import com.yiming.wrutils1_21_11.WrtLog;
+import com.yiming.wrutils1_21_11.test.BlockStringParser;
 import com.yiming.wrutils1_21_11.test.assertion.AssertionEngine;
 import com.yiming.wrutils1_21_11.test.assertion.Failure;
 import com.yiming.wrutils1_21_11.test.exec.BlockInteractor;
 import com.yiming.wrutils1_21_11.test.model.AreaSpec;
 import com.yiming.wrutils1_21_11.test.model.AssertStep;
+import com.yiming.wrutils1_21_11.test.model.Expectation;
 import com.yiming.wrutils1_21_11.test.model.PlaceStep;
 import com.yiming.wrutils1_21_11.test.model.Region;
 import com.yiming.wrutils1_21_11.test.model.SetupBlock;
@@ -51,6 +53,8 @@ public final class TestRun {
     private final Region chunkRegion;
     private final RecordingConfig recordingConfig;
     private final List<Failure> failures = new ArrayList<>();
+    /** 窗口断言（{@code withinTicks > 0}）正在等待的条目，每 tick 采样一次。 */
+    private final List<PendingAssert> pendingAsserts = new ArrayList<>();
 
     private RecordingSession recordingSession;
     private int leadTicksRemaining;
@@ -232,17 +236,49 @@ public final class TestRun {
             finish(RunState.ABORTED);
             return;
         }
-        if (scheduler.isFinished()) {
+        checkPendingAsserts();
+        // 窗口断言没结束时不算跑完：最后一步之后可能还有人在等自己的窗口
+        if (scheduler.isFinished() && pendingAsserts.isEmpty()) {
             if (trailTicks > 0) {
                 postRollTicksRemaining = trailTicks;
             } else {
                 finish(RunState.DONE);
             }
         } else if (relativeTick > definition.timeoutTicks()) {
-            // 超时只在"步骤还没跑完"时判定；后置预留（已跑完）不受 timeoutTicks 影响
+            // 步骤没跑完、或还在等窗口断言，都算"没结束"；后置预留（已跑完）不受 timeoutTicks 影响
             WrtLog.LOGGER.warn("[WRT] {} aborted: timeout after {} ticks", definition.id(), definition.timeoutTicks());
             finish(RunState.ABORTED);
         }
+    }
+
+    /**
+     * 采样所有挂起的窗口断言：任一次通过即撤销，窗口末仍失败才并入 {@code failures}。
+     * 在每 tick 的步骤循环之后调用，所以同一 tick 的 place/use 一定先执行。
+     */
+    private void checkPendingAsserts() {
+        for (int i = 0; i < pendingAsserts.size(); i++) {
+            PendingAssert pending = pendingAsserts.get(i);
+            List<Failure> now = AssertionEngine.check(pending.expect(), world, pending.pos(), relativeTick,
+                    pending.stepIndex());
+            if (now.isEmpty()) {
+                pendingAsserts.remove(i--);
+                continue;
+            }
+            if (relativeTick >= pending.endTick()) {
+                for (Failure failure : now) {
+                    // 失败报在窗口末，并注明这是"窗口内始终没满足"，免得读者以为只采样了一次
+                    failures.add(new Failure(failure.kind(), failure.tick(), failure.stepIndex(), failure.pos(),
+                            failure.expected(), failure.actual(),
+                            failure.why() + "（期望在 tick " + pending.startTick() + ".." + pending.endTick()
+                                    + " 内任一 tick 成立）"));
+                }
+                pendingAsserts.remove(i--);
+            }
+        }
+    }
+
+    /** 一条正在等待窗口的断言。窗口为 {@code startTick..endTick}（含两端）。 */
+    private record PendingAssert(int stepIndex, BlockPos pos, Expectation expect, long startTick, long endTick) {
     }
 
     private void execute(TestScheduler.Scheduled scheduled, long relativeTick) {
@@ -254,7 +290,14 @@ public final class TestRun {
             BlockInteractor.use(player, world, use.pos(), use.side(), use.hand());
         } else if (step instanceof AssertStep assertStep) {
             asserts++;
-            failures.addAll(AssertionEngine.check(assertStep.expect(), world, assertStep.pos(), relativeTick, scheduled.index()));
+            if (assertStep.withinTicks() <= 0) {
+                failures.addAll(AssertionEngine.check(assertStep.expect(), world, assertStep.pos(), relativeTick,
+                        scheduled.index()));
+            } else {
+                // 不在这里立即采样：挂到本 tick 末尾统一处理，保证同一 tick 的 place/use 一定排在采样之前。
+                pendingAsserts.add(new PendingAssert(scheduled.index(), assertStep.pos(), assertStep.expect(),
+                        relativeTick, relativeTick + assertStep.withinTicks()));
+            }
         }
     }
 
@@ -263,7 +306,7 @@ public final class TestRun {
         BlockArgumentParser.BlockResult parsed;
         try {
             // 允许方块串携带 NBT（如箱子 {Items:[...]}），供 NBT 断言使用
-            parsed = BlockArgumentParser.block(blocks, place.block(), true);
+            parsed = BlockStringParser.parse(blocks, place.block(), true);
         } catch (CommandSyntaxException e) {
             failures.add(new Failure("place", 0L, -1, place.pos(), place.block(), "<unparsed>",
                     "bad block string: " + e.getMessage()));

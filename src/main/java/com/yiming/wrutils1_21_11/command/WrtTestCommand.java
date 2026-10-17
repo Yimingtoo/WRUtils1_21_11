@@ -376,7 +376,8 @@ public final class WrtTestCommand {
             return "use " + format(use.pos()) + " side=" + use.side().name() + " hand=" + use.hand().name();
         }
         if (step instanceof AssertStep assertStep) {
-            return "assert " + format(assertStep.pos()) + " " + assertStep.expect();
+            return "assert" + (assertStep.withinTicks() > 0 ? "±" + assertStep.withinTicks() : "")
+                    + " " + format(assertStep.pos()) + " " + assertStep.expect();
         }
         return step.toString();
     }

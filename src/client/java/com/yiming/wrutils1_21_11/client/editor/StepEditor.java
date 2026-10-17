@@ -64,7 +64,7 @@ public final class StepEditor {
         return switch (type) {
             case PLACE -> new PlaceStep(tick, pos, "minecraft:stone");
             case USE -> new UseStep(tick, pos, Direction.UP, Hand.MAIN_HAND);
-            case ASSERT -> new AssertStep(tick, pos, new Expectation("minecraft:stone", false, null, null));
+            case ASSERT -> new AssertStep(tick, pos, new Expectation("minecraft:stone", false, null, null), 0L);
         };
     }
 
@@ -76,7 +76,7 @@ public final class StepEditor {
             return new UseStep(tick, use.pos(), use.side(), use.hand());
         }
         AssertStep assertStep = (AssertStep) step;
-        return new AssertStep(tick, assertStep.pos(), assertStep.expect());
+        return new AssertStep(tick, assertStep.pos(), assertStep.expect(), assertStep.withinTicks());
     }
 
     public static Step withPos(Step step, BlockPos pos) {
@@ -87,7 +87,15 @@ public final class StepEditor {
             return new UseStep(use.tick(), pos, use.side(), use.hand());
         }
         AssertStep assertStep = (AssertStep) step;
-        return new AssertStep(assertStep.tick(), pos, assertStep.expect());
+        return new AssertStep(assertStep.tick(), pos, assertStep.expect(), assertStep.withinTicks());
+    }
+
+    /** 窗口断言：0 = 精确采样；非 assert 步骤原样返回。 */
+    public static Step withWithinTicks(Step step, long withinTicks) {
+        if (!(step instanceof AssertStep assertStep)) {
+            return step;
+        }
+        return new AssertStep(assertStep.tick(), assertStep.pos(), assertStep.expect(), withinTicks);
     }
 
     /**
@@ -114,7 +122,8 @@ public final class StepEditor {
             Expectation old = assertStep.expect() == null
                     ? new Expectation(null, false, null, null) : assertStep.expect();
             return new AssertStep(assertStep.tick(), assertStep.pos(),
-                    new Expectation(text.isBlank() ? null : text, old.strict(), old.nbt(), old.redstone()));
+                    new Expectation(text.isBlank() ? null : text, old.strict(), old.nbt(), old.redstone()),
+                    assertStep.withinTicks());
         }
         return step;
     }

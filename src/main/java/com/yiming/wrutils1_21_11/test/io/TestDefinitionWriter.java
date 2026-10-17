@@ -134,6 +134,10 @@ public final class TestDefinitionWriter {
             object.addProperty("tick", assertStep.tick());
             object.add("pos", relArray(assertStep.pos(), origin));
             object.add("expect", assertStep.expect() == null ? new JsonObject() : expectation(assertStep.expect()));
+            // 只在非默认时写，现有定义的 JSON 形状保持不变
+            if (assertStep.withinTicks() > 0) {
+                object.addProperty("withinTicks", assertStep.withinTicks());
+            }
         } else {
             throw new IllegalArgumentException("未知步骤类型: " + step.getClass());
         }
