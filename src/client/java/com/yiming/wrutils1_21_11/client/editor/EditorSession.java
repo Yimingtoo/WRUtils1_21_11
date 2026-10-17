@@ -2,6 +2,7 @@ package com.yiming.wrutils1_21_11.client.editor;
 
 import com.yiming.wrutils1_21_11.test.io.TestDefinitionWriter;
 import com.yiming.wrutils1_21_11.test.model.AreaSpec;
+import com.yiming.wrutils1_21_11.test.model.AssertStep;
 import com.yiming.wrutils1_21_11.test.model.CleanupMode;
 import com.yiming.wrutils1_21_11.test.model.Region;
 import com.yiming.wrutils1_21_11.test.model.SetupBlock;
@@ -103,6 +104,39 @@ public final class EditorSession {
             return;
         }
         area = new AreaSpec(inputs, area.cleanup(), area.forceChunks(), area.clearEntities(), area.gameRules());
+    }
+
+    /** 可写区的清理策略；没有 area 时按默认的 {@code clear_input}。 */
+    public CleanupMode cleanup() {
+        return area == null ? CleanupMode.CLEAR_INPUT : area.cleanup();
+    }
+
+    /** 只换 cleanup，区域列表与其余开关保持不变。 */
+    public void setCleanup(CleanupMode mode) {
+        if (area == null) {
+            area = new AreaSpec(List.of(Region.single(origin)), mode, false, false, Map.of());
+            return;
+        }
+        area = new AreaSpec(area.inputs(), mode, area.forceChunks(), area.clearEntities(), area.gameRules());
+    }
+
+    /**
+     * 把超时抬到"最晚步骤（窗口断言算到窗口末端）+ 100 tick"，**从不降低**——
+     * 用户显式填了更长超时（比如等机器稳定）时不该被改回去。
+     */
+    public void raiseTimeoutToFit() {
+        long latest = 0L;
+        for (Step step : steps) {
+            long end = step.tick();
+            if (step instanceof AssertStep assertStep) {
+                end += Math.max(0L, assertStep.withinTicks());
+            }
+            latest = Math.max(latest, end);
+        }
+        long minimum = latest + 100L;
+        if (timeoutTicks < minimum) {
+            timeoutTicks = minimum;
+        }
     }
 
     public void addRegion() {

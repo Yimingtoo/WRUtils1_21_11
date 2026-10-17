@@ -1,6 +1,7 @@
 package com.yiming.wrutils1_21_11.client.editor;
 
 import com.yiming.wrutils1_21_11.client.net.ClientTestEditor;
+import com.yiming.wrutils1_21_11.test.model.AssertStep;
 import com.yiming.wrutils1_21_11.test.model.PlaceStep;
 import com.yiming.wrutils1_21_11.test.model.SetupBlock;
 import com.yiming.wrutils1_21_11.test.model.Step;
@@ -8,6 +9,7 @@ import com.yiming.wrutils1_21_11.test.model.UseStep;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.Click;
 import net.minecraft.client.gui.DrawContext;
+import net.minecraft.client.gui.screen.ConfirmScreen;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.widget.ButtonWidget;
 import net.minecraft.client.gui.widget.TextFieldWidget;
@@ -51,6 +53,8 @@ public class TestEditScreen extends Screen {
     private TextFieldWidget descField;
     private ButtonWidget recordButton;
     private TextFieldWidget tickField;
+    /** 仅 assert 可用：窗口宽度，0 = 只在该 tick 采样。 */
+    private TextFieldWidget withinField;
     private TextFieldWidget posField;
     private TextFieldWidget mainField;
     private ButtonWidget typeButton;
@@ -67,6 +71,8 @@ public class TestEditScreen extends Screen {
     private boolean mainFieldApplies;
     /** 焦点是在按钮回调之后才被 ParentElement 设置上去的，只能延后一帧清（见 {@link #tick()}）。 */
     private boolean clearFocusNextTick;
+    /** 返回列表的自动保存正在进行；挡住重复的 ESC / 返回点击。 */
+    private boolean leaving;
 
     public TestEditScreen() {
         super(Text.literal(TITLE));
@@ -87,8 +93,57 @@ public class TestEditScreen extends Screen {
         return super.keyPressed(input);
     }
 
+    /**
+     * 返回列表 = 自动保存。校验失败或保存失败**先拦下**，给出「丢弃离开 / 继续编辑」的选择；
+     * 成功则切回列表，并在列表屏顶部显示保存提示（保存结果原本只显示在编辑屏里，切走就看不见了）。
+     */
     private void backToList() {
-        this.client.setScreen(new TestEditorScreen(session.id()));
+        if (leaving) {
+            return;
+        }
+        leaving = true;
+        error = null;
+        status = null;
+        String problem = validateAll();
+        if (problem != null) {
+            leaving = false;
+            error = problem;
+            promptDiscard(problem);
+            return;
+        }
+        long timeoutBefore = session.timeoutTicks();
+        long raisedTo = prepareForSave();
+        boolean timeoutRaised = raisedTo != timeoutBefore;
+        ClientTestEditor.writeTest(session.id().trim(), session.json(), response -> {
+            MinecraftClient client = MinecraftClient.getInstance();
+            if (response.isError()) {
+                leaving = false;
+                error = response.error();
+                if (client.currentScreen == this) {
+                    promptDiscard(response.error());
+                }
+                return;
+            }
+            if (client.currentScreen == this) {
+                // 提示显示在返回后的列表屏顶部，而不是聊天栏
+                client.setScreen(new TestEditorScreen(response.id(),
+                        "已保存 " + response.id() + ".json"
+                                + (timeoutRaised ? "（超时自动提高到 " + raisedTo + "）" : "")));
+            }
+        });
+    }
+
+    /** 拦下离开：yes = 丢弃改动去列表，no = 留在编辑屏。 */
+    private void promptDiscard(String problem) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        client.setScreen(new ConfirmScreen(confirmed -> {
+            if (confirmed) {
+                client.setScreen(new TestEditorScreen(session.id()));
+            } else {
+                client.setScreen(this);
+            }
+        }, Text.literal("无法保存"), Text.literal(problem),
+                Text.literal("丢弃离开"), Text.literal("继续编辑")));
     }
 
     /**
@@ -218,9 +273,14 @@ public class TestEditScreen extends Screen {
             }
         });
 
-        // 条目表单：三格都靠 placeholder 自解释（tick / 坐标 / 方块串）
-        int formWidth = (usable - BUTTON_GAP * 2) / 3;
-        tickField = add(new TextFieldWidget(this.textRenderer, MARGIN, formRowY(), formWidth, FIELD_HEIGHT,
+        // 条目表单：四格都靠 placeholder 自解释（tick / 窗口 / 坐标 / 方块串）。
+        // tick 与窗口用固定窄宽，剩下的全给方块串（它最需要横向空间）。
+        int tickWidth = 44;
+        int withinWidth = 54;
+        int posWidth = 90;
+        int mainX = MARGIN + tickWidth + withinWidth + posWidth + BUTTON_GAP * 3;
+        int mainWidth = Math.max(60, this.width - MARGIN - mainX);
+        tickField = add(new TextFieldWidget(this.textRenderer, MARGIN, formRowY(), tickWidth, FIELD_HEIGHT,
                 Text.literal("tick")));
         tickField.setChangedListener(value -> {
             if (suppress || entryIndex < 0 || isSetupSelected()) {
@@ -235,8 +295,25 @@ public class TestEditScreen extends Screen {
             session.steps().set(index, StepEditor.withTick(session.steps().get(index), Long.parseLong(value.trim())));
         });
 
-        posField = add(new TextFieldWidget(this.textRenderer, MARGIN + formWidth + BUTTON_GAP, formRowY(),
-                formWidth, FIELD_HEIGHT, Text.literal("x y z")));
+        withinField = add(new TextFieldWidget(this.textRenderer, MARGIN + tickWidth + BUTTON_GAP, formRowY(),
+                withinWidth, FIELD_HEIGHT, Text.literal("窗口")));
+        withinField.setChangedListener(value -> {
+            if (suppress || entryIndex < 0 || isSetupSelected()) {
+                return;
+            }
+            String problem = BlockStringValidator.validateNonNegativeInteger(value);
+            withinField.setEditableColor(problem == null ? COLOR_TEXT : COLOR_ERROR);
+            if (problem != null) {
+                return;
+            }
+            int index = stepIndexOf();
+            session.steps().set(index, StepEditor.withWithinTicks(session.steps().get(index),
+                    Long.parseLong(value.trim())));
+        });
+
+        posField = add(new TextFieldWidget(this.textRenderer,
+                MARGIN + tickWidth + withinWidth + BUTTON_GAP * 2, formRowY(),
+                posWidth, FIELD_HEIGHT, Text.literal("x y z")));
         posField.setChangedListener(value -> {
             if (suppress || entryIndex < 0) {
                 return;
@@ -256,8 +333,8 @@ public class TestEditScreen extends Screen {
             }
         });
 
-        mainField = add(new TextFieldWidget(this.textRenderer, MARGIN + (formWidth + BUTTON_GAP) * 2, formRowY(),
-                formWidth, FIELD_HEIGHT, Text.literal("方块串")));
+        mainField = add(new TextFieldWidget(this.textRenderer, mainX, formRowY(),
+                mainWidth, FIELD_HEIGHT, Text.literal("方块串")));
         mainField.setMaxLength(512);
         mainField.setChangedListener(value -> {
             if (suppress || entryIndex < 0) {
@@ -350,9 +427,11 @@ public class TestEditScreen extends Screen {
         boolean hasEntry = entryIndex >= 0 && entryIndex < entryCount();
         if (!hasEntry) {
             tickField.setText("");
+            withinField.setText("");
             posField.setText("");
             mainField.setText("");
             setFieldEnabled(tickField, false);
+            setFieldEnabled(withinField, false);
             setFieldEnabled(posField, false);
             setFieldEnabled(mainField, false);
             mainFieldApplies = false;
@@ -361,7 +440,9 @@ public class TestEditScreen extends Screen {
         } else if (isSetupSelected()) {
             SetupBlock block = session.setup().get(entryIndex);
             tickField.setText("");
+            withinField.setText("");
             setFieldEnabled(tickField, false);
+            setFieldEnabled(withinField, false);
             posField.setText(formatPlain(block.pos()));
             setFieldEnabled(posField, true);
             mainField.setText(block.block());
@@ -373,6 +454,9 @@ public class TestEditScreen extends Screen {
             Step step = session.steps().get(stepIndexOf());
             tickField.setText(Long.toString(step.tick()));
             setFieldEnabled(tickField, true);
+            boolean isAssert = step instanceof AssertStep;
+            withinField.setText(isAssert ? Long.toString(((AssertStep) step).withinTicks()) : "");
+            setFieldEnabled(withinField, isAssert);
             posField.setText(formatPlain(StepEditor.posOf(step)));
             setFieldEnabled(posField, true);
             mainField.setText(StepEditor.mainField(step));
@@ -382,6 +466,7 @@ public class TestEditScreen extends Screen {
             typeButton.setMessage(Text.literal("类型:" + StepEditor.typeOf(step).label()));
         }
         tickField.setEditableColor(COLOR_TEXT);
+        withinField.setEditableColor(COLOR_TEXT);
         posField.setEditableColor(COLOR_TEXT);
         mainField.setEditableColor(COLOR_TEXT);
         pickPosButton.active = hasEntry;
@@ -464,6 +549,9 @@ public class TestEditScreen extends Screen {
     // ---- 保存 ----
 
     private void save(boolean andRun) {
+        if (leaving) {
+            return;   // 自动保存返回正在进行，别让重复点击再发一次写请求
+        }
         error = null;
         status = null;
         String problem = validateAll();
@@ -471,7 +559,9 @@ public class TestEditScreen extends Screen {
             error = problem;
             return;
         }
-        session.widenInputToFit();
+        long timeoutBefore = session.timeoutTicks();
+        long raisedTo = prepareForSave();
+        boolean timeoutRaised = raisedTo != timeoutBefore;
         String id = session.id().trim();
         // 落盘交给服务端：多人下客户端没有存档路径（见 TestEditorServer）。
         // 注意保存是异步的——写失败时界面得留着并报错，不能像以前那样立刻当成功。
@@ -481,7 +571,8 @@ public class TestEditScreen extends Screen {
                 return;
             }
             if (!andRun) {
-                status = "已保存 " + response.id() + ".json";
+                status = "已保存 " + response.id() + ".json"
+                        + (timeoutRaised ? "（超时自动提高到 " + raisedTo + "）" : "");
                 return;
             }
             MinecraftClient client = MinecraftClient.getInstance();
@@ -495,6 +586,24 @@ public class TestEditScreen extends Screen {
                 this.close();
             }
         });
+    }
+
+    /**
+     * 保存前的公共准备：扩可写区 + 超时自动抬高（至少给最晚步骤，窗口断言算到窗口末端，
+     * 留 100 tick；**从不降低**——用户显式填了更长超时不该被改回去）。
+     *
+     * @return 准备后的 {@code timeoutTicks}
+     */
+    private long prepareForSave() {
+        session.widenInputToFit();
+        long before = session.timeoutTicks();
+        session.raiseTimeoutToFit();
+        if (session.timeoutTicks() != before) {
+            suppress = true;
+            timeoutField.setText(Long.toString(session.timeoutTicks()));
+            suppress = false;
+        }
+        return session.timeoutTicks();
     }
 
     /** 返回第一条问题；全通过返回 null。坏串一律不许落盘。 */
@@ -520,9 +629,17 @@ public class TestEditScreen extends Screen {
                 return "选中项的 tick 不合法";
             }
             if (mainFieldApplies) {
-                String problem = BlockStringValidator.validate(mainField.getText());
-                if (problem != null) {
-                    return "选中项的方块串非法: " + problem;
+                // assert 的方块串**可以为空**：只查 NBT / 红石时本来就没有 block。
+                // 这里必须与下面遍历模型时的规则一致（那里对 assert 明确允许空串），
+                // 否则"选中它再保存"会报错、"不选中保存"却通过。
+                boolean emptyAssertBlock = !isSetupSelected() && stepIndexOf() >= 0
+                        && session.steps().get(stepIndexOf()) instanceof AssertStep
+                        && mainField.getText().isBlank();
+                if (!emptyAssertBlock) {
+                    String problem = BlockStringValidator.validate(mainField.getText());
+                    if (problem != null) {
+                        return "选中项的方块串非法: " + problem;
+                    }
                 }
             }
         }
@@ -604,7 +721,7 @@ public class TestEditScreen extends Screen {
         } else {
             int usable = this.width - MARGIN * 2;
             String hint = "setup[" + session.setup().size() + "] / steps[" + session.steps().size() + "]"
-                    + "  选中条目后可改 tick、坐标、方块串";
+                    + "  选中条目后可改 tick、窗口、坐标、方块串";
             context.drawTextWithShadow(this.textRenderer, hint, MARGIN, formRowY() - 12, COLOR_LABEL);
         }
     }
@@ -642,7 +759,9 @@ public class TestEditScreen extends Screen {
         if (step instanceof UseStep use) {
             return head + "use " + format(use.pos()) + " " + use.side().name() + "/" + use.hand().name();
         }
-        return head + "assert " + format(StepEditor.posOf(step)) + " " + StepEditor.mainField(step);
+        AssertStep assertStep = (AssertStep) step;
+        return head + "assert" + (assertStep.withinTicks() > 0 ? "±" + assertStep.withinTicks() : "")
+                + " " + format(assertStep.pos()) + " " + StepEditor.mainField(step);
     }
 
     private static String format(BlockPos pos) {

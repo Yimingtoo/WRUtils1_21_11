@@ -1,6 +1,7 @@
 package com.yiming.wrutils1_21_11.test.assertion;
 
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
+import com.yiming.wrutils1_21_11.test.BlockStringParser;
 import com.yiming.wrutils1_21_11.test.model.Expectation;
 import com.yiming.wrutils1_21_11.test.model.NbtMatch;
 import com.yiming.wrutils1_21_11.test.model.RedstoneExpect;
@@ -45,7 +46,7 @@ public final class AssertionEngine {
         RegistryWrapper<Block> blocks = world.getRegistryManager().getOrThrow(RegistryKeys.BLOCK);
         BlockArgumentParser.BlockResult parsed;
         try {
-            parsed = BlockArgumentParser.block(blocks, expect.block(), false);
+            parsed = BlockStringParser.parse(blocks, expect.block(), false);
         } catch (CommandSyntaxException e) {
             failures.add(new Failure("blockstate", tick, stepIndex, pos, expect.block(),
                     BlockArgumentParser.stringifyBlockState(actual), "bad expected block string: " + e.getMessage()));

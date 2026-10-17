@@ -46,13 +46,19 @@ public class TestEditorScreen extends Screen {
     private static final int COLOR_HEADER = 0xFFFFFF55;
     private static final int COLOR_HINT = 0xFFAAAAAA;
     private static final int COLOR_ERROR = 0xFFFF5555;
+    private static final int COLOR_OK = 0xFF55FF55;
     private static final int COLOR_SELECTED_BG = 0xFF3A6EA5;
     private static final int COLOR_PANEL_BG = 0xC0000000;
     private static final int COLOR_SCROLLBAR = 0xFFFFFFFF;
 
+    /** 上一次选中的测试 id（客户端进程级）。按 K 重新打开时用它恢复选中项。 */
+    private static String lastSelectedId;
+
     private final List<String> ids = new ArrayList<>();
     /** 从编辑屏返回时带上原来编辑的 id，让列表保留选中项。 */
     private final String initialSelection;
+    /** 列表屏顶部的一次性提示（如"已自动保存"）；没有则为 null。 */
+    private final String notice;
     private int selected = -1;
     private int scroll;
     private TestDefinition current;
@@ -65,12 +71,17 @@ public class TestEditorScreen extends Screen {
     private boolean clearFocusNextTick;
 
     public TestEditorScreen() {
-        this(null);
+        this(lastSelectedId);
     }
 
     public TestEditorScreen(String initialSelection) {
+        this(initialSelection, null);
+    }
+
+    public TestEditorScreen(String initialSelection, String notice) {
         super(Text.literal(TITLE));
         this.initialSelection = initialSelection;
+        this.notice = notice;
     }
 
     /** 编辑时暂停世界；因此"运行"必须先关屏，否则 run 永远等不到 tick。 */
@@ -122,6 +133,7 @@ public class TestEditorScreen extends Screen {
             return;
         }
         String id = ids.get(selected);
+        lastSelectedId = id;
         ClientTestEditor.readTest(id, response -> {
             if (response.isError()) {
                 error = response.error();
@@ -222,6 +234,9 @@ public class TestEditorScreen extends Screen {
             if (selected < 0 && initialSelection != null) {
                 selected = ids.indexOf(initialSelection);
             }
+            if (selected >= 0) {
+                lastSelectedId = ids.get(selected);
+            }
             scrollToSelected();
             loadSelected();
         });
@@ -260,6 +275,9 @@ public class TestEditorScreen extends Screen {
 
     private void select(int index) {
         selected = index;
+        if (index >= 0 && index < ids.size()) {
+            lastSelectedId = ids.get(index);
+        }
         loadSelected();
     }
 
@@ -308,6 +326,9 @@ public class TestEditorScreen extends Screen {
     public void render(DrawContext context, int mouseX, int mouseY, float delta) {
         super.render(context, mouseX, mouseY, delta);
         context.drawTextWithShadow(this.textRenderer, TITLE + "  (" + ids.size() + " 个测试)", 8, 8, COLOR_TITLE);
+        if (notice != null) {
+            context.drawTextWithShadow(this.textRenderer, notice, 8, 20, COLOR_OK);
+        }
 
         int listWidth = listWidth();
         int top = listTop();
@@ -385,7 +406,9 @@ public class TestEditorScreen extends Screen {
                     + " side=" + use.side().name() + " hand=" + use.hand().name();
         }
         if (step instanceof AssertStep assertStep) {
-            return "t" + assertStep.tick() + " assert " + format(assertStep.pos()) + " " + assertStep.expect();
+            return "t" + assertStep.tick()
+                    + (assertStep.withinTicks() > 0 ? "±" + assertStep.withinTicks() : "")
+                    + " assert " + format(assertStep.pos()) + " " + assertStep.expect();
         }
         return step.toString();
     }

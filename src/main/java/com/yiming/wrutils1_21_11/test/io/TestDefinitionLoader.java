@@ -153,9 +153,22 @@ public final class TestDefinitionLoader {
         return switch (action) {
             case "place" -> new PlaceStep(tick, pos, step.get("block").getAsString());
             case "use" -> new UseStep(tick, pos, readDirection(step, "side", Direction.UP), readHand(step, "hand"));
-            case "assert" -> new AssertStep(tick, pos, readExpectation(step.getAsJsonObject("expect")));
+            case "assert" -> new AssertStep(tick, pos, readExpectation(step.getAsJsonObject("expect")),
+                    readWithinTicks(step));
             default -> throw new IllegalArgumentException("unknown step action: " + action);
         };
+    }
+
+    /** 缺省 0 = 精确断言；负数没有意义，直接拒绝而不是悄悄当成 0。 */
+    private static long readWithinTicks(JsonObject step) {
+        if (!step.has("withinTicks")) {
+            return 0L;
+        }
+        long value = step.get("withinTicks").getAsLong();
+        if (value < 0) {
+            throw new IllegalArgumentException("withinTicks 不能为负: " + value);
+        }
+        return value;
     }
 
     private static Expectation readExpectation(JsonObject expect) {

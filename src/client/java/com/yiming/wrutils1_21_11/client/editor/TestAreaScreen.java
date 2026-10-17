@@ -1,5 +1,6 @@
 package com.yiming.wrutils1_21_11.client.editor;
 
+import com.yiming.wrutils1_21_11.test.model.CleanupMode;
 import com.yiming.wrutils1_21_11.test.model.Region;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.Click;
@@ -18,6 +19,9 @@ import java.util.List;
  *
  * <p>只有这些区域里的方块能被 {@code place}/{@code use} 修改；断言位置不受限。
  * 两个角都可以拾取——{@code Region.of} 会归一化，先拾哪个角都行。
+ *
+ * <p>底部还有一个 **cleanup 三选一**（清空 / 保持 / 快照）：点一下切换到下一个策略。
+ * 它与区域列表分开保存，改区域不会把它重置。
  */
 public class TestAreaScreen extends Screen {
     private static final String TITLE = "WRT 可写区";
@@ -135,34 +139,53 @@ public class TestAreaScreen extends Screen {
             }
         });
 
-        int fiveWidth = (usable - BUTTON_GAP * 4) / 5;
+        int buttonWidth = (usable - BUTTON_GAP * 5) / 6;
         int x = MARGIN;
         addDrawableChild(ButtonWidget.builder(Text.literal("＋区域"), button -> {
             session.addRegion();
             selected = regions().size() - 1;
             reveal();
             syncForm();
-        }).dimensions(x, buttonRowY(), fiveWidth, 20).build());
-        x += fiveWidth + BUTTON_GAP;
+        }).dimensions(x, buttonRowY(), buttonWidth, 20).build());
+        x += buttonWidth + BUTTON_GAP;
         addDrawableChild(ButtonWidget.builder(Text.literal("删除"), button -> deleteRegion())
-                .dimensions(x, buttonRowY(), fiveWidth, 20).build());
-        x += fiveWidth + BUTTON_GAP;
+                .dimensions(x, buttonRowY(), buttonWidth, 20).build());
+        x += buttonWidth + BUTTON_GAP;
         addDrawableChild(ButtonWidget.builder(Text.literal("拾取角1"),
                         button -> beginPick(EditorSession.PickKind.AREA_MIN))
-                .dimensions(x, buttonRowY(), fiveWidth, 20).build());
-        x += fiveWidth + BUTTON_GAP;
+                .dimensions(x, buttonRowY(), buttonWidth, 20).build());
+        x += buttonWidth + BUTTON_GAP;
         addDrawableChild(ButtonWidget.builder(Text.literal("拾取角2"),
                         button -> beginPick(EditorSession.PickKind.AREA_MAX))
-                .dimensions(x, buttonRowY(), fiveWidth, 20).build());
-        x += fiveWidth + BUTTON_GAP;
+                .dimensions(x, buttonRowY(), buttonWidth, 20).build());
+        x += buttonWidth + BUTTON_GAP;
+        addDrawableChild(ButtonWidget.builder(cleanupLabel(), button -> {
+            session.setCleanup(nextCleanup(session.cleanup()));
+            button.setMessage(cleanupLabel());
+        }).dimensions(x, buttonRowY(), buttonWidth, 20).build());
+        x += buttonWidth + BUTTON_GAP;
         addDrawableChild(ButtonWidget.builder(Text.literal("返回"), button -> back())
-                .dimensions(x, buttonRowY(), fiveWidth, 20).build());
+                .dimensions(x, buttonRowY(), buttonWidth, 20).build());
 
         if (selected >= regions().size()) {
             selected = regions().size() - 1;
         }
         listScroll = Math.max(0, Math.min(maxScroll(), listScroll));
         syncForm();
+    }
+
+    private Text cleanupLabel() {
+        String name = switch (session.cleanup()) {
+            case CLEAR_INPUT -> "清空";
+            case NONE -> "保持";
+            case SNAPSHOT -> "快照";
+        };
+        return Text.literal("清理:" + name);
+    }
+
+    private static CleanupMode nextCleanup(CleanupMode current) {
+        CleanupMode[] values = CleanupMode.values();
+        return values[(current.ordinal() + 1) % values.length];
     }
 
     private TextFieldWidget add(TextFieldWidget field) {
